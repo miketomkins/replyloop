@@ -20,6 +20,7 @@ from .schedules import due_times_between, validate_schedule
 _RETRY_MINUTES = (1, 5, 15)
 _MAX_RETRY_MINUTES = 60
 _MAX_REPLY_DURATION_MINUTES = 366 * 24 * 60
+_DELIVERY_CLAIM_LEASE_MINUTES = 60
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ class ReminderService:
 
     def tick(self) -> TickResult:
         now = self.clock.now()
+        self._recover_stale_claims(now)
         created = self._create_due_occurrences(now)
         due = self.db.list_due_occurrences(now + timedelta(microseconds=1))
         attempted = delivered = failed = 0
@@ -92,15 +94,26 @@ class ReminderService:
             if not self._claim_occurrence(occurrence.id, now):
                 continue
             attempted += 1
-            outcome = self.adapter.deliver(
-                DeliveryRequest(occurrence.id, reminder.id, _decode_target(reminder.target), _message_for(reminder, occurrence))
-            )
-            if outcome.status == OutcomeStatus.SUCCESS:
-                self._record_success(reminder, occurrence, outcome, now)
-                delivered += 1
-            else:
-                self._record_failure(occurrence, outcome, now)
-                failed += 1
+            try:
+                outcome = self.adapter.deliver(
+                    DeliveryRequest(occurrence.id, reminder.id, _decode_target(reminder.target), _message_for(reminder, occurrence))
+                )
+            except Exception as exc:
+                outcome = DeliveryOutcome.failure(getattr(self.adapter, "transport", "unknown"), str(exc) or exc.__class__.__name__)
+            try:
+                if outcome.status == OutcomeStatus.SUCCESS:
+                    if self._record_success(reminder, occurrence, outcome, now):
+                        delivered += 1
+                    else:
+                        attempted -= 1
+                else:
+                    if self._record_failure(occurrence, outcome, now):
+                        failed += 1
+                    else:
+                        attempted -= 1
+            except Exception:
+                self._restore_claim(occurrence.id, now)
+                raise
         return TickResult(created, attempted, delivered, failed)
 
     def handle_reply(self, text: str, identity: ReplyIdentity) -> ReplyResult:
@@ -203,6 +216,25 @@ class ReminderService:
         delay = _RETRY_MINUTES[failures - 1] if failures <= len(_RETRY_MINUTES) else _MAX_RETRY_MINUTES
         return now >= last_failure + timedelta(minutes=delay)
 
+    def _recover_stale_claims(self, now: datetime) -> None:
+        stale_before = now - timedelta(minutes=_DELIVERY_CLAIM_LEASE_MINUTES)
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                "SELECT id FROM occurrences WHERE status = ? AND updated_at <= ?",
+                (OccurrenceStatus.DELIVERING.value, datetime_to_iso(stale_before)),
+            ).fetchall()
+            for row in rows:
+                _set_occurrence_if_status(connection, row["id"], OccurrenceStatus.DUE, now, OccurrenceStatus.DELIVERING)
+                _insert_event(connection, Event(None, "occurrence", row["id"], "delivery.claim.expired", {}, now))
+
+    def _restore_claim(self, occurrence_id: str, now: datetime) -> None:
+        try:
+            with self.db.transaction() as connection:
+                if _set_occurrence_if_status(connection, occurrence_id, OccurrenceStatus.DUE, now, OccurrenceStatus.DELIVERING):
+                    _insert_event(connection, Event(None, "occurrence", occurrence_id, "delivery.claim.restored", {}, now))
+        except Exception:
+            pass
+
     def _claim_occurrence(self, occurrence_id: str, now: datetime) -> bool:
         with self.db.transaction() as connection:
             cursor = connection.execute(
@@ -220,38 +252,75 @@ class ReminderService:
             _insert_event(connection, Event(None, "occurrence", occurrence_id, "delivery.claimed", {}, now))
         return True
 
-    def _record_failure(self, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime) -> None:
+    def _record_failure(self, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime) -> bool:
         attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "failure"), occurrence.id, now, DeliveryStatus.FAILURE, outcome.transport, outcome.error)
         with self.db.transaction() as connection:
+            if not _set_occurrence_if_status(connection, occurrence.id, OccurrenceStatus.DUE, now, OccurrenceStatus.DELIVERING):
+                return False
             connection.execute(
                 "INSERT INTO delivery_attempts(id, occurrence_id, attempted_at, status, transport, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (attempt.id, attempt.occurrence_id, datetime_to_iso(attempt.attempted_at), attempt.status.value, attempt.transport, attempt.error, datetime_to_iso(attempt.created_at)),
             )
-            _set_occurrence(connection, occurrence.id, OccurrenceStatus.DUE, now)
             _insert_event(connection, Event(None, "occurrence", occurrence.id, "delivery.failed", {"attempt_id": attempt.id, "status": attempt.status.value, "transport": attempt.transport}, now))
+        return True
 
-    def _record_success(self, reminder: Reminder, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime) -> None:
+    def _record_success(self, reminder: Reminder, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime) -> bool:
         attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "success"), occurrence.id, now, DeliveryStatus.SUCCESS, outcome.transport)
         with self.db.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE occurrences
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND EXISTS (SELECT 1 FROM reminders WHERE id = ? AND status = ?)
+                """,
+                (
+                    OccurrenceStatus.DELIVERED.value,
+                    datetime_to_iso(now),
+                    occurrence.id,
+                    OccurrenceStatus.DELIVERING.value,
+                    reminder.id,
+                    ReminderStatus.ACTIVE.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
             connection.execute(
                 "INSERT INTO delivery_attempts(id, occurrence_id, attempted_at, status, transport, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (attempt.id, attempt.occurrence_id, datetime_to_iso(attempt.attempted_at), attempt.status.value, attempt.transport, None, datetime_to_iso(attempt.created_at)),
             )
-            _set_occurrence(connection, occurrence.id, OccurrenceStatus.DELIVERED, now)
             _insert_event(connection, Event(None, "occurrence", occurrence.id, "delivery.succeeded", {"attempt_id": attempt.id, "transport": outcome.transport, "provider_message_id": outcome.provider_message_id, "delivery_number": _success_count(connection, occurrence.id)}, now))
+        return True
 
     def _resolve_open_occurrences(self, connection: sqlite3.Connection, identity: ReplyIdentity) -> list[tuple[str, str]]:
         rows = connection.execute(
-            "SELECT o.id, o.reminder_id, o.updated_at, r.target FROM occurrences o JOIN reminders r ON r.id = o.reminder_id WHERE o.status = ? AND r.status = ? ORDER BY o.updated_at DESC, o.id DESC",
-            (OccurrenceStatus.DELIVERED.value, ReminderStatus.ACTIVE.value),
+            """
+            SELECT o.id, o.reminder_id, MAX(a.attempted_at) AS delivered_at, r.target
+            FROM occurrences o
+            JOIN reminders r ON r.id = o.reminder_id
+            JOIN delivery_attempts a ON a.occurrence_id = o.id AND a.status = ?
+            WHERE o.status IN (?, ?, ?, ?)
+              AND r.status = ?
+            GROUP BY o.id, o.reminder_id, r.target
+            ORDER BY delivered_at DESC, o.id DESC
+            """,
+            (
+                DeliveryStatus.SUCCESS.value,
+                OccurrenceStatus.DELIVERED.value,
+                OccurrenceStatus.SNOOZED.value,
+                OccurrenceStatus.DUE.value,
+                OccurrenceStatus.DELIVERING.value,
+                ReminderStatus.ACTIVE.value,
+            ),
         ).fetchall()
         matches: list[tuple[str, str]] = []
         latest_updated_at: str | None = None
         for row in rows:
             if target_matches(_decode_target(row["target"]), identity):
                 if latest_updated_at is None:
-                    latest_updated_at = row["updated_at"]
-                elif row["updated_at"] != latest_updated_at:
+                    latest_updated_at = row["delivered_at"]
+                elif row["delivered_at"] != latest_updated_at:
                     break
                 matches.append((row["id"], row["reminder_id"]))
         return matches
@@ -355,6 +424,20 @@ def _set_occurrence(connection: sqlite3.Connection, occurrence_id: str, status: 
     cursor = connection.execute(f"UPDATE occurrences SET status = ?{due}, updated_at = ? WHERE id = ?", params)
     if cursor.rowcount != 1:
         raise KeyError(occurrence_id)
+
+
+def _set_occurrence_if_status(
+    connection: sqlite3.Connection,
+    occurrence_id: str,
+    status: OccurrenceStatus,
+    now: datetime,
+    expected_status: OccurrenceStatus,
+) -> bool:
+    cursor = connection.execute(
+        "UPDATE occurrences SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+        (status.value, datetime_to_iso(now), occurrence_id, expected_status.value),
+    )
+    return cursor.rowcount == 1
 
 
 def _set_reminder(connection: sqlite3.Connection, reminder_id: str, status: ReminderStatus, now: datetime) -> None:

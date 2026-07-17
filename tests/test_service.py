@@ -36,6 +36,21 @@ class SlowRecordingAdapter:
         return DeliveryOutcome.success(self.transport, message_id)
 
 
+class BlockingSuccessAdapter:
+    transport = "synthetic"
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.requests: list[DeliveryRequest] = []
+
+    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
+        self.requests.append(request)
+        self.started.set()
+        self.release.wait(timeout=5)
+        return DeliveryOutcome.success(self.transport, "msg-late")
+
+
 def make_service(tmp: str, *, outcomes: list[DeliveryOutcome] | None = None, now: datetime | None = None):
     db = connect(Path(tmp) / "state.sqlite")
     clock = FakeClock(now or datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
@@ -193,6 +208,71 @@ class ServiceLifecycleTests(unittest.TestCase):
         assert reminder is not None
         self.assertEqual(reminder.status, ReminderStatus.CANCELLED)
         self.assertEqual(open_count, 0)
+
+    def test_cancel_resolves_snoozed_occurrence_without_waiting_for_redelivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, clock, _adapter, service = make_service(tmp)
+            create_daily(service)
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            service.tick()
+            snoozed = service.handle_reply("SNOOZE 1h", ReplyIdentity("telegram", "conversation-alpha", "participant-alpha", True))
+            cancelled = service.handle_reply("CANCEL", ReplyIdentity("telegram", "conversation-alpha", "participant-alpha", True))
+            occurrence = db.get_occurrence(snoozed.occurrence_id or "")
+            reminder = db.get_reminder("reminder-1")
+            db.close()
+        self.assertTrue(snoozed.handled)
+        self.assertTrue(cancelled.handled)
+        assert occurrence is not None
+        self.assertEqual(occurrence.status, OccurrenceStatus.CANCELLED)
+        assert reminder is not None
+        self.assertEqual(reminder.status, ReminderStatus.CANCELLED)
+
+    def test_cancelled_in_flight_delivery_cannot_overwrite_cancelled_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            db = connect(path)
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            setup_service = ReminderService(db, RecordingAdapter(), clock)
+            create_daily(setup_service, max_deliveries=2)
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            setup_service.tick()
+            clock.set(datetime(2026, 1, 1, 9, 10, tzinfo=UTC))
+            db.close()
+            adapter = BlockingSuccessAdapter()
+            exceptions: list[BaseException] = []
+
+            def run_tick() -> None:
+                worker_db = None
+                try:
+                    worker_db = connect(path)
+                    ReminderService(worker_db, adapter, clock).tick()
+                except BaseException as exc:
+                    exceptions.append(exc)
+                finally:
+                    if worker_db is not None:
+                        worker_db.close()
+
+            thread = threading.Thread(target=run_tick)
+            thread.start()
+            self.assertTrue(adapter.started.wait(timeout=5))
+            reply_db = connect(path)
+            cancelled = ReminderService(reply_db, RecordingAdapter(), clock).handle_reply(
+                "CANCEL", ReplyIdentity("telegram", "conversation-alpha", "participant-alpha", True)
+            )
+            reply_db.close()
+            adapter.release.set()
+            thread.join(timeout=5)
+            check = connect(path)
+            statuses = [row["status"] for row in check.connection.execute("SELECT status FROM occurrences").fetchall()]
+            attempts = check.connection.execute("SELECT COUNT(*) FROM delivery_attempts").fetchone()[0]
+            reminder = check.get_reminder("reminder-1")
+            check.close()
+        self.assertEqual(exceptions, [])
+        self.assertTrue(cancelled.handled)
+        self.assertEqual(statuses, ["cancelled"])
+        self.assertEqual(attempts, 1)
+        assert reminder is not None
+        self.assertEqual(reminder.status, ReminderStatus.CANCELLED)
 
     def test_reply_resolves_latest_delivered_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
