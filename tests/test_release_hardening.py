@@ -5,6 +5,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,18 +115,52 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertEqual((recovered.created, recovered.delivered), (1, 1))
 
     def test_snooze_and_cancel_race_closes_open_occurrences(self) -> None:
+        self._assert_snooze_cancel_race(snooze_delay=0.0, cancel_delay=0.05, expected_snooze_handled=True)
+        self._assert_snooze_cancel_race(snooze_delay=0.05, cancel_delay=0.0, expected_snooze_handled=False)
+
+    def _assert_snooze_cancel_race(self, *, snooze_delay: float, cancel_delay: float, expected_snooze_handled: bool) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            db, clock, service = self._delivered_service(Path(tmp) / "state.sqlite")
-            snoozed = service.handle_reply("SNOOZE 30m", ReplyIdentity("photon", "conversation-alpha", "participant-alpha", True))
-            cancelled = service.handle_reply("CANCEL", ReplyIdentity("photon", "conversation-alpha", "participant-alpha", True))
+            path = Path(tmp) / "state.sqlite"
+            db, clock, _service = self._delivered_service(path)
+            db.close()
+            barrier = threading.Barrier(2)
+            results = {}
+
+            def reply(name: str, text: str, delay: float) -> None:
+                local_db = connect(path)
+                try:
+                    service = ReminderService(local_db, RecordingAdapter(), clock)
+                    barrier.wait(timeout=5)
+                    if delay:
+                        time.sleep(delay)
+                    results[name] = service.handle_reply(text, ReplyIdentity("photon", "conversation-alpha", "participant-alpha", True))
+                finally:
+                    local_db.close()
+
+            threads = [
+                threading.Thread(target=reply, args=("snooze", "SNOOZE 30m", snooze_delay)),
+                threading.Thread(target=reply, args=("cancel", "CANCEL", cancel_delay)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertFalse([thread for thread in threads if thread.is_alive()])
+            db = connect(path)
             reminder = db.get_reminder("r1")
             open_count = db.connection.execute("SELECT COUNT(*) FROM occurrences WHERE status IN ('due','delivering','delivered','snoozed')").fetchone()[0]
+            occurrence_statuses = [row["status"] for row in db.connection.execute("SELECT status FROM occurrences ORDER BY id").fetchall()]
             db.close()
-        self.assertTrue(snoozed.handled)
-        self.assertTrue(cancelled.handled)
+        self.assertEqual(set(results), {"snooze", "cancel"})
+        self.assertTrue(results["cancel"].handled)
+        self.assertEqual(results["snooze"].handled, expected_snooze_handled)
+        if not results["snooze"].handled:
+            self.assertEqual(results["snooze"].reason, "not-found")
         assert reminder is not None
         self.assertEqual(reminder.status, ReminderStatus.CANCELLED)
         self.assertEqual(open_count, 0)
+        self.assertTrue(occurrence_statuses)
+        self.assertTrue(all(status == OccurrenceStatus.CANCELLED.value for status in occurrence_statuses))
 
     def test_corrupt_database_cli_doctor_smoke_fails_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

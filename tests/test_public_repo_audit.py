@@ -548,6 +548,41 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("state.sqlite: path", result.stderr)
             self.assertIn("git history", result.stderr)
 
+    def test_git_history_commit_message_is_scanned_without_secret_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            secret_name = "api" + "_" + "key"
+            secret_value = "M" * 24
+            self.assertEqual(git(root, "commit", "-m", f"bootstrap {secret_name}={secret_value}").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-history/", result.stderr)
+            self.assertIn("COMMIT_MESSAGE:1", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+
+    def test_git_history_invalid_utf8_text_blob_does_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            (root / "bad.txt").write_bytes(b"clean prefix \xff\xfe\n")
+            self.assertEqual(git(root, "add", "bad.txt").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add invalid utf8 text").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("passed", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

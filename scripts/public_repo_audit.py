@@ -95,6 +95,23 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+COMMIT_MESSAGE_RULES = {
+    "private key marker",
+    "assigned secret or token value",
+    "authorization bearer token",
+    "cloud access key marker",
+    "github token marker",
+    "openai token marker",
+    "gitlab token marker",
+    "slack token marker",
+    "google api key marker",
+    "stripe secret key marker",
+    "npm token marker",
+    "pypi token marker",
+    "xai token marker",
+    "age private key marker",
+}
+
 PATH_REDACTIONS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -156,6 +173,8 @@ def run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         cwd=root,
         check=False,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
@@ -261,6 +280,13 @@ def scan_lines(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
                 yield Finding(path, line_no, "private or loopback IP address")
 
 
+def scan_commit_message(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
+    for line_no, line in enumerate(lines, start=1):
+        for rule, pattern in CHECKS:
+            if rule in COMMIT_MESSAGE_RULES and pattern.search(line):
+                yield Finding(path, line_no, rule)
+
+
 def audit(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for path in candidate_files(root):
@@ -280,6 +306,10 @@ def scan_git_history(root: Path) -> list[Finding]:
         return []
     findings: list[Finding] = []
     for commit in [line.strip() for line in commits.stdout.splitlines() if line.strip()]:
+        message = run_git(root, ["show", "-s", "--format=%B", commit])
+        if message.returncode == 0:
+            message_path = root / ".git-history" / commit[:12] / "COMMIT_MESSAGE"
+            findings.extend(scan_commit_message(message_path, message.stdout.splitlines()))
         tree = run_git(root, ["ls-tree", "-r", "--name-only", "-z", commit])
         if tree.returncode != 0:
             continue

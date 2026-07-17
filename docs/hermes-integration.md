@@ -41,8 +41,10 @@ Example script content, using placeholders only:
 #!/usr/bin/env bash
 set -euo pipefail
 export REPLYLOOP_DB="/path/to/replyloop.db"
-hermes replyloop --json tick
+hermes replyloop --json tick >/dev/null
 ```
+
+The stdout redirection is intentional for `--no-agent` cron jobs: Hermes delivers any non-empty script stdout verbatim. Successful no-op ticks should stay silent while stderr and nonzero exit status still surface failures.
 
 The `--script` value is relative to the operator's Hermes scripts directory. The command above is an example only and should not be run until placeholders are replaced in an operator-controlled environment.
 

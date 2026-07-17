@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -132,6 +133,16 @@ class ReminderService:
             return ReplyResult(False, reason="unrelated")
         if not identity.is_dm:
             return ReplyResult(False, reason="group-traffic")
+        for attempt in range(5):
+            try:
+                return self._handle_parsed_reply(parsed, identity)
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc) or attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    def _handle_parsed_reply(self, parsed: ParsedReply, identity: ReplyIdentity) -> ReplyResult:
         with self.db.transaction() as connection:
             matches = self._resolve_open_occurrences(connection, identity)
             if len(matches) != 1:
