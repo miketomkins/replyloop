@@ -1,6 +1,6 @@
 # Hermes integration
 
-ReplyLoop can be loaded as an optional Hermes plugin. The plugin keeps ReplyLoop local-first: the database stays in the ReplyLoop SQLite file, delivery is routed through Hermes' `ctx.dispatch_tool('send_message', ...)` plugin seam, and gateway reply commands are handled only for exact direct-message matches.
+ReplyLoop can be loaded as an optional Hermes plugin. The plugin keeps ReplyLoop local-first: the database stays in the ReplyLoop SQLite file, delivery is routed through Hermes' `send_message` transport, and gateway reply commands are handled only for exact direct-message matches.
 
 ## Install the package entry point
 
@@ -48,7 +48,7 @@ export REPLYLOOP_DB="/path/to/replyloop.db"
 hermes replyloop --json tick
 ```
 
-`hermes replyloop tick` uses the plugin bridge, which calls `ctx.dispatch_tool('send_message', {'action':'send', 'target':'<platform>:<chat>', 'message':'...'})`. If the dispatch result has missing or false `success`, ReplyLoop records a transport failure and keeps the occurrence pending for retry.
+`hermes replyloop tick` uses the plugin bridge, which first tries `ctx.dispatch_tool('send_message', {'action':'send', 'target':'<platform>:<chat>', 'message':'...'})` and falls back to Hermes' direct `tools.send_message_tool.send_message_tool` helper when the current registry reports `Unknown tool: send_message`. If the transport result has missing or false `success`, ReplyLoop records a failure and keeps the occurrence pending for retry.
 
 ## Tools
 
@@ -69,7 +69,7 @@ Tool handlers return JSON strings, catch exceptions, and redact target-like iden
 
 The gateway hook runs before normal dispatch and only handles exact `DONE`, `SNOOZE`, or `CANCEL` text from exact Photon direct-message targets that match an open ReplyLoop occurrence. It rejects group traffic, other platforms, wrong senders, ambiguous matches, and unrelated text so those messages continue through the normal Hermes conversation path.
 
-After a durable DB transition, the hook schedules a short acknowledgement through the live Photon adapter, redacts the mutable source chat label used by current Hermes skip logging, and returns `action=skip` to prevent the handled command from entering the LLM path. If the database mutation fails or the acknowledgement cannot be scheduled, the hook returns allow or no result rather than silently swallowing normal conversation.
+After a durable DB transition, the hook schedules a short acknowledgement through the live Photon adapter and returns `action=skip` with a one-way `redacted_chat` label to prevent the handled command from entering the LLM path. It does not mutate the shared gateway event object, so later plugins still receive the original routing identity. If the database mutation fails or the acknowledgement cannot be scheduled, the hook returns allow or no result rather than silently swallowing normal conversation.
 
 ## Security boundary
 
@@ -77,4 +77,4 @@ ReplyLoop never stores raw target identifiers in public CLI output, tool output,
 
 ## Live activation warning
 
-This integration can send messages when enabled with a live Hermes gateway and scheduler. Before live activation, verify the database path, target placeholders, plugin allow-list, Photon configuration, scheduler command, and Hermes gateway support for redacted `pre_gateway_dispatch` skip logging in a non-personal test channel.
+This integration can send messages when enabled with a live Hermes gateway and scheduler. Before live activation, verify the database path, target placeholders, plugin allow-list, Photon configuration, scheduler command, and Hermes gateway support for honoring redacted `pre_gateway_dispatch` result metadata in skip logging in a non-personal test channel.

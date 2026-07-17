@@ -66,12 +66,14 @@ class HermesHookTests(unittest.TestCase):
             return result, adapter.sent, status, event.source.chat_id
 
         result, sent, status, logged_chat = asyncio.run(run_case())
-        self.assertEqual(result, {"action": "skip", "reason": "replyloop-command-handled"})
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "skip")
+        self.assertEqual(result["reason"], "replyloop-command-handled")
+        self.assertTrue(result["redacted_chat"].startswith("id:"))
         self.assertEqual(status, OccurrenceStatus.DONE.value)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["chat_id"], "c-a")
-        self.assertNotEqual(logged_chat, "c-a")
-        self.assertTrue(logged_chat.startswith("id:"))
+        self.assertEqual(logged_chat, "c-a")
 
     def test_photon_ack_uses_secondary_profile_adapter(self) -> None:
         async def run_case():
@@ -96,7 +98,9 @@ class HermesHookTests(unittest.TestCase):
             return result, default_adapter.sent, secondary_adapter.sent
 
         result, default_sent, secondary_sent = asyncio.run(run_case())
-        self.assertEqual(result, {"action": "skip", "reason": "replyloop-command-handled"})
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "skip")
+        self.assertEqual(result["reason"], "replyloop-command-handled")
         self.assertEqual(default_sent, [])
         self.assertEqual(len(secondary_sent), 1)
         self.assertEqual(secondary_sent[0]["chat_id"], "c-a")
@@ -217,7 +221,7 @@ class HermesHookTests(unittest.TestCase):
         self.assertIn("replyloop-ack-unavailable", result["reason"])
         self.assertEqual(default_sent, [])
 
-    def test_skip_redacts_source_chat_before_gateway_skip_logging(self) -> None:
+    def test_skip_result_does_not_mutate_shared_source_for_later_plugins(self) -> None:
         async def run_case():
             with tempfile.TemporaryDirectory() as tmp:
                 db_path = self._seed_delivered(Path(tmp) / "state.sqlite")
@@ -236,10 +240,12 @@ class HermesHookTests(unittest.TestCase):
             return result, adapter.sent, event.source.chat_id
 
         result, sent, logged_chat = asyncio.run(run_case())
-        self.assertEqual(result, {"action": "skip", "reason": "replyloop-command-handled"})
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "skip")
+        self.assertEqual(result["reason"], "replyloop-command-handled")
+        self.assertTrue(result["redacted_chat"].startswith("id:"))
         self.assertEqual(len(sent), 1)
-        self.assertNotEqual(logged_chat, "c-a")
-        self.assertTrue(logged_chat.startswith("id:"))
+        self.assertEqual(logged_chat, "c-a")
 
     def _seed_delivered(self, db_path: Path) -> Path:
         clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=timezone.utc))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from importlib import import_module
 from typing import Any
 
 from replyloop.delivery import DeliveryOutcome, DeliveryRequest
@@ -63,12 +64,39 @@ class HermesDeliveryAdapter:
 
 
 def _send_message(ctx: Any, args: dict[str, Any]) -> Any:
-    """Dispatch through Hermes' plugin context send_message tool seam."""
+    """Dispatch through the supported Hermes send_message implementation.
+
+    Current Hermes PluginContext.dispatch_tool only reaches registry-backed
+    tools, and send_message is not registry-backed in some releases. Try the
+    public plugin seam first for forward compatibility, then fall back to the
+    existing send_message tool helper that Hermes itself uses.
+    """
 
     dispatch_tool = getattr(ctx, "dispatch_tool", None)
-    if not callable(dispatch_tool):
-        raise RuntimeError("Hermes PluginContext dispatch_tool is unavailable")
-    return dispatch_tool("send_message", args)
+    if callable(dispatch_tool):
+        result = dispatch_tool("send_message", args)
+        if not _is_unknown_tool_result(result):
+            return result
+    return _direct_send_message(args)
+
+
+def _is_unknown_tool_result(result: Any) -> bool:
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = str(payload.get("error") or "").lower()
+    return "unknown tool" in error and "send_message" in error
+
+
+def _direct_send_message(args: dict[str, Any]) -> Any:
+    try:
+        send_message_tool = import_module("tools.send_message_tool").send_message_tool
+    except Exception as exc:  # pragma: no cover - depends on Hermes checkout availability
+        raise RuntimeError("Hermes send_message helper is unavailable") from exc
+    return send_message_tool(args)
 
 
 def _target_values(target: dict[str, Any], formatted: str) -> list[str]:

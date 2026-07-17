@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 
 from replyloop.hermes_plugin import register
+from replyloop.hermes_plugin import delivery
 from replyloop.hermes_plugin.delivery import HermesDeliveryAdapter
 
 
@@ -19,6 +20,7 @@ class FakePluginContext:
         self.hooks = {}
         self.sends = []
         self.dispatch_result = {"success": True, "message_id": "provider-1"}
+        self.dispatch_unknown = False
 
     def register_tool(self, **kwargs):
         self.tools[kwargs["name"]] = kwargs
@@ -33,6 +35,8 @@ class FakePluginContext:
         self.sends.append({"tool_name": tool_name, "args": args, "kwargs": kwargs})
         if tool_name != "send_message":
             raise AssertionError(f"unexpected registry dispatch: {tool_name}")
+        if self.dispatch_unknown:
+            return json.dumps({"error": "Unknown tool: send_message"})
         return json.dumps(self.dispatch_result)
 
     def replyloop_send_message(self, args):  # pragma: no cover - legacy seam must not be used
@@ -148,6 +152,35 @@ class HermesPluginRegistrationTests(unittest.TestCase):
         self.assertTrue(outcome.success)
         self.assertEqual(outcome.provider_message_id, "provider-2")
         self.assertEqual(ctx.sends[0]["tool_name"], "send_message")
+
+    def test_unknown_registry_send_message_falls_back_to_direct_helper(self) -> None:
+        ctx = FakePluginContext()
+        ctx.dispatch_unknown = True
+        calls = []
+        original = delivery._direct_send_message
+        delivery._direct_send_message = lambda args: calls.append(args) or json.dumps({"success": True, "message_id": "direct-1"})
+        try:
+            adapter = HermesDeliveryAdapter(ctx)
+            request = SimpleNamespace(
+                target={"platform": "photon", "chat_id": "c-a", "sender_id": "s-a"},
+                text="hello",
+                idempotency_key="idem-1",
+            )
+            outcome = adapter.deliver(request)  # type: ignore[arg-type]
+        finally:
+            delivery._direct_send_message = original
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.provider_message_id, "direct-1")
+        self.assertEqual(ctx.sends[0]["tool_name"], "send_message")
+        self.assertEqual(calls, [{"action": "send", "target": "photon:c-a", "message": "hello"}])
+
+    def test_handler_returns_json_error_for_malformed_args(self) -> None:
+        ctx = FakePluginContext()
+        register(ctx)
+        result = json.loads(ctx.tools["replyloop_doctor"]["handler"]([("db", "a"), ("db", "b", "c")]))
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
 
 
 if __name__ == "__main__":

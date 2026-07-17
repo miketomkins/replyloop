@@ -17,9 +17,9 @@ from .delivery import HermesDeliveryAdapter, redact_text
 
 def make_handler(fn: Callable[[dict[str, Any], Any], dict[str, Any]], ctx: Any = None) -> Callable[..., str]:
     def handler(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
-        merged = dict(args or {})
-        merged.update(kwargs)
         try:
+            merged = dict(args or {})
+            merged.update(kwargs)
             return json.dumps(fn(merged, ctx), sort_keys=True)
         except Exception as exc:
             return json.dumps({"ok": False, "error": redact_text(exc)}, sort_keys=True)

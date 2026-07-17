@@ -45,8 +45,7 @@ def pre_gateway_dispatch(*, event: Any, gateway: Any = None, session_store: Any 
         return None
     if not _schedule_ack(gateway, source, chat_id, ACK_TEXT.get(result.command.value if result.command else "", "Updated.")):
         return {"action": "allow", "reason": f"replyloop-ack-unavailable:{redacted_label(chat_id)}"}
-    _redact_skip_log_source(source, chat_id)
-    return {"action": "skip", "reason": "replyloop-command-handled"}
+    return {"action": "skip", "reason": "replyloop-command-handled", "redacted_chat": redacted_label(chat_id)}
 
 
 def _platform_value(platform: Any) -> str:
@@ -84,18 +83,3 @@ def _schedule_ack(gateway: Any, source: Any, chat_id: str, content: str) -> bool
         return True
     except Exception:
         return False
-
-
-def _redact_skip_log_source(source: Any, chat_id: str) -> None:
-    """Avoid raw identifiers in current Hermes' pre_gateway_dispatch skip log.
-
-    Current Hermes logs ``source.chat_id`` after a plugin returns action=skip.
-    The hook only needs the raw chat before scheduling the acknowledgement;
-    once the ack has been scheduled, redact the mutable source field so the
-    gateway can suppress the LLM path without writing raw Photon identifiers.
-    """
-
-    try:
-        setattr(source, "chat_id", redacted_label(chat_id))
-    except Exception:
-        pass
