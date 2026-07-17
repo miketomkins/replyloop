@@ -292,7 +292,7 @@ def backup_database(source: Path, destination: Path) -> dict[str, Any]:
     destination = destination.expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination_path = destination.resolve(strict=False)
-    if source_path == destination_path or (destination.exists() and os.path.samefile(source_path, destination)):
+    if _is_live_sqlite_path(source_path, destination, destination_path):
         raise CLIError("backup destination must not be the live source database", 1)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     os.close(fd)
@@ -309,6 +309,16 @@ def backup_database(source: Path, destination: Path) -> dict[str, Any]:
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+def _is_live_sqlite_path(source_path: Path, destination: Path, destination_path: Path) -> bool:
+    live_paths = [source_path, *(Path(f"{source_path}{suffix}") for suffix in ("-wal", "-shm", "-journal"))]
+    for live_path in live_paths:
+        if live_path.resolve(strict=False) == destination_path:
+            return True
+        if live_path.exists() and destination.exists() and os.path.samefile(live_path, destination):
+            return True
+    return False
 
 
 def doctor(path: Path) -> dict[str, Any]:

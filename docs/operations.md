@@ -63,6 +63,7 @@ replyloop backup /var/backups/replyloop/state.db
 ```
 
 A successful command prints `integrity_check: ok`. A failed command leaves the existing destination untouched when the filesystem supports atomic replace.
+The destination must not be the live database file or any live SQLite sidecar for that database (`-wal`, `-shm`, or `-journal`), including hardlinks or normalized path aliases.
 
 ## Restore
 
@@ -109,4 +110,4 @@ Cancelled reminders are terminal and cannot be resumed. Cancelling a reminder al
 
 ## No data deletion guarantee
 
-Pause, resume, cancel, done, snooze, tick, reply, doctor, backup, and restore guidance are projection updates or file-copy operations. They do not purge reminders, occurrences, delivery attempts, or events. If a future maintenance command adds deletion or compaction, it must be explicit, documented separately, and covered by tests.
+Pause, resume, cancel, done, snooze, tick, reply, doctor, backup, and restore guidance are projection updates or file-copy operations. They do not purge reminders, occurrences, delivery attempts, or events. Backup refuses destinations that alias the live database or its SQLite sidecars so an operator cannot overwrite active state while copying it. If a future maintenance command adds deletion or compaction, it must be explicit, documented separately, and covered by tests.

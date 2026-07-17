@@ -64,6 +64,31 @@ class BackupTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "must not be the live source"):
                 backup_database(source, destination)
 
+    def test_backup_rejects_live_wal_destination_and_preserves_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "state.db"
+            db = connect(source)
+            reader = sqlite3.connect(source)
+            try:
+                reader.execute("BEGIN")
+                reader.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()
+                db.add_reminder(Reminder("before", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["09:00"]}, "UTC"))
+                wal_path = Path(str(source) + "-wal")
+                self.assertTrue(wal_path.exists())
+
+                with self.assertRaisesRegex(Exception, "must not be the live source"):
+                    backup_database(source, wal_path)
+
+                db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["10:00"]}, "UTC"))
+            finally:
+                reader.close()
+                db.close()
+            with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as check:
+                quick = check.execute("PRAGMA quick_check").fetchone()[0]
+                reminders = [row[0] for row in check.execute("SELECT id FROM reminders ORDER BY id").fetchall()]
+        self.assertEqual(quick, "ok")
+        self.assertEqual(reminders, ["after", "before"])
+
     def test_doctor_reports_corruption_without_exposing_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "broken.db"
