@@ -109,6 +109,12 @@ class CLITests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(expected.exists())
 
+    def test_global_options_are_accepted_after_subcommand(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_cli(tmp, "doctor", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["doctor"]["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

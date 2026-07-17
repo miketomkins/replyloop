@@ -76,9 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="replyloop", description="Manage local ReplyLoop reminders")
     parser.add_argument("--db", help="SQLite database path. Defaults to REPLYLOOP_DB or XDG data home.")
     parser.add_argument("--json", action="store_true", help="write JSON output")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--db", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    create = sub.add_parser("create", help="create a reminder")
+    create = sub.add_parser("create", parents=[common], help="create a reminder")
     create.add_argument("--id", dest="reminder_id", help="stable reminder id. Defaults to a generated id.")
     create.add_argument("--schedule-json", help="explicit schedule JSON object")
     create.add_argument("--once-at", help="create a once schedule at an ISO datetime")
@@ -98,26 +101,26 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--repeat-last", action="store_true", help="repeat the last escalation interval")
 
     for name in ("list", "show", "pause", "resume", "cancel"):
-        cmd = sub.add_parser(name, help=f"{name} reminders")
+        cmd = sub.add_parser(name, parents=[common], help=f"{name} reminders")
         if name == "list":
             cmd.add_argument("--status", choices=[item.value for item in ReminderStatus], help="filter by status")
         else:
             cmd.add_argument("reminder_id")
 
-    tick = sub.add_parser("tick", help="create and deliver due reminders")
+    tick = sub.add_parser("tick", parents=[common], help="create and deliver due reminders")
     tick.add_argument("--fail", action="store_true", help="force the deterministic adapter to fail deliveries")
 
-    reply = sub.add_parser("reply", help="process a deterministic local reply")
+    reply = sub.add_parser("reply", parents=[common], help="process a deterministic local reply")
     reply.add_argument("--platform", required=True)
     reply.add_argument("--chat", required=True, dest="chat_id")
     reply.add_argument("--sender", dest="sender_id")
     reply.add_argument("--chat-type", choices=("dm", "group"), default="dm")
     reply.add_argument("text")
 
-    backup = sub.add_parser("backup", help="create an integrity-checked SQLite backup")
+    backup = sub.add_parser("backup", parents=[common], help="create an integrity-checked SQLite backup")
     backup.add_argument("destination")
 
-    sub.add_parser("doctor", help="run operational diagnostics")
+    sub.add_parser("doctor", parents=[common], help="run operational diagnostics")
     return parser
 
 
