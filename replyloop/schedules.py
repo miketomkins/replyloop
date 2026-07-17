@@ -109,11 +109,14 @@ def _load_timezone(timezone_name: str) -> ZoneInfo:
         raise ValidationError("timezone is required")
     try:
         return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
         raise ValidationError(f"unknown timezone: {timezone_name}") from exc
 
 
 def _reject_unknown_keys(schedule: dict[str, Any], allowed: set[str]) -> None:
+    non_string = [key for key in schedule if not isinstance(key, str)]
+    if non_string:
+        raise ValidationError("schedule keys must be strings")
     unknown = sorted(set(schedule) - allowed)
     if unknown:
         raise ValidationError("unknown schedule keys: " + ", ".join(unknown))

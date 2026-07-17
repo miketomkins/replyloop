@@ -51,9 +51,11 @@ class Reminder:
             raise ValidationError("target is required")
         if not isinstance(self.schedule, dict):
             raise ValidationError("schedule must be a mapping")
+        if not isinstance(self.timezone, str) or not self.timezone:
+            raise ValidationError("timezone is required")
         try:
             ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError as exc:
+        except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
             raise ValidationError(f"unknown timezone: {self.timezone}") from exc
         if self.default_snooze_minutes <= 0:
             raise ValidationError("default_snooze_minutes must be positive")

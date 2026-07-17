@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from replyloop.db import connect
+from replyloop.errors import ValidationError
 from replyloop.models import Occurrence, OccurrenceStatus, Reminder, ReminderStatus
 
 UTC = timezone.utc
@@ -32,6 +33,10 @@ def sample_occurrence(identifier: str = "occurrence-alpha") -> Occurrence:
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_reminder_malformed_timezone_key_raises_validation_error(self) -> None:
+        with self.assertRaises(ValidationError):
+            Reminder(id="reminder-bad-zone", target="synthetic-direct-target", schedule={"kind": "daily", "times": ["09:00"]}, timezone="../UTC")
+
     def test_migration_is_idempotent_and_sets_pragmas(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.sqlite"

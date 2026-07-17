@@ -51,6 +51,16 @@ class ScheduleValidationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_schedule({"kind": "daily", "times": ["09:00"]}, "Missing/Zone")
 
+    def test_malformed_timezone_keys_raise_validation_error(self) -> None:
+        for timezone_name in ("../UTC", "/UTC", None):
+            with self.subTest(timezone_name=timezone_name):
+                with self.assertRaises(ValidationError):
+                    validate_schedule({"kind": "daily", "times": ["09:00"]}, timezone_name)  # type: ignore[arg-type]
+
+    def test_non_string_schedule_keys_raise_validation_error(self) -> None:
+        with self.assertRaises(ValidationError):
+            validate_schedule({"kind": "daily", "times": ["09:00"], 1: True}, "UTC")  # type: ignore[dict-item]
+
     def test_once_requires_full_ascii_datetime(self) -> None:
         invalid = [
             "2026-01-01",
