@@ -35,6 +35,7 @@ class FakeGateway:
     def __init__(self, *, default_adapter=None, profile_adapters=None) -> None:
         self.adapters = {"photon": default_adapter} if default_adapter is not None else {}
         self.profile_adapters = profile_adapters or {}
+        self.replyloop_redacted_skip_logging = True
 
     def _adapter_for_source(self, source):
         profile = getattr(source, "profile", None)
@@ -53,7 +54,7 @@ class HermesHookTests(unittest.TestCase):
                 try:
                     adapter = FakeAdapter()
                     event = self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a")
-                    result = pre_gateway_dispatch(event=event, gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}))
+                    result = pre_gateway_dispatch(event=event, gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}, replyloop_redacted_skip_logging=True))
                     await asyncio.sleep(0)
                     db = connect(db_path)
                     status = db.connection.execute("SELECT status FROM occurrences").fetchone()["status"]
@@ -111,7 +112,7 @@ class HermesHookTests(unittest.TestCase):
                             adapter = FakeAdapter()
                             result = pre_gateway_dispatch(
                                 event=self._event(command, platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
-                                gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}),
+                                gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}, replyloop_redacted_skip_logging=True),
                             )
                             await asyncio.sleep(0)
                             db = connect(db_path)
@@ -157,7 +158,7 @@ class HermesHookTests(unittest.TestCase):
                 adapter = FakeAdapter()
                 result = pre_gateway_dispatch(
                     event=self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
-                    gateway=SimpleNamespace(adapters={"photon": adapter}),
+                    gateway=SimpleNamespace(adapters={"photon": adapter}, replyloop_redacted_skip_logging=True),
                 )
                 db = connect(db_path)
                 statuses = [row["status"] for row in db.connection.execute("SELECT status FROM occurrences ORDER BY id").fetchall()]
@@ -188,6 +189,54 @@ class HermesHookTests(unittest.TestCase):
                     os.environ["REPLYLOOP_DB"] = old
         self.assertEqual(result["action"], "allow")
         self.assertIn("replyloop-ack-unavailable", result["reason"])
+
+    def test_secondary_profile_missing_adapter_does_not_use_default_adapter(self) -> None:
+        async def run_case():
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = self._seed_delivered(Path(tmp) / "state.sqlite")
+                old = os.environ.get("REPLYLOOP_DB")
+                os.environ["REPLYLOOP_DB"] = str(db_path)
+                try:
+                    default_adapter = FakeAdapter()
+                    event = self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a", profile="secondary")
+                    result = pre_gateway_dispatch(
+                        event=event,
+                        gateway=FakeGateway(default_adapter=default_adapter, profile_adapters={}),
+                    )
+                    await asyncio.sleep(0)
+                finally:
+                    if old is None:
+                        os.environ.pop("REPLYLOOP_DB", None)
+                    else:
+                        os.environ["REPLYLOOP_DB"] = old
+            return result, default_adapter.sent
+
+        result, default_sent = asyncio.run(run_case())
+        self.assertEqual(result["action"], "allow")
+        self.assertIn("replyloop-ack-unavailable", result["reason"])
+        self.assertEqual(default_sent, [])
+
+    def test_skip_requires_redacted_gateway_logging_prerequisite(self) -> None:
+        async def run_case():
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = self._seed_delivered(Path(tmp) / "state.sqlite")
+                old = os.environ.get("REPLYLOOP_DB")
+                os.environ["REPLYLOOP_DB"] = str(db_path)
+                try:
+                    adapter = FakeAdapter()
+                    event = self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a")
+                    result = pre_gateway_dispatch(event=event, gateway=SimpleNamespace(adapters={"photon": adapter}))
+                    await asyncio.sleep(0)
+                finally:
+                    if old is None:
+                        os.environ.pop("REPLYLOOP_DB", None)
+                    else:
+                        os.environ["REPLYLOOP_DB"] = old
+            return result, adapter.sent
+
+        result, sent = asyncio.run(run_case())
+        self.assertEqual(result, {"action": "allow", "reason": "replyloop-command-handled-redaction-prerequisite-missing"})
+        self.assertEqual(len(sent), 1)
 
     def _seed_delivered(self, db_path: Path) -> Path:
         clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=timezone.utc))

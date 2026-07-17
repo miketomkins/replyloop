@@ -45,6 +45,8 @@ def pre_gateway_dispatch(*, event: Any, gateway: Any = None, session_store: Any 
         return None
     if not _schedule_ack(gateway, source, chat_id, ACK_TEXT.get(result.command.value if result.command else "", "Updated.")):
         return {"action": "allow", "reason": f"replyloop-ack-unavailable:{redacted_label(chat_id)}"}
+    if not _supports_redacted_skip_logging(gateway):
+        return {"action": "allow", "reason": "replyloop-command-handled-redaction-prerequisite-missing"}
     return {"action": "skip", "reason": "replyloop-command-handled"}
 
 
@@ -62,7 +64,9 @@ def _schedule_ack(gateway: Any, source: Any, chat_id: str, content: str) -> bool
             adapter = adapter_for_source(source)
         except Exception:
             adapter = None
-    if adapter is None:
+        if adapter is None:
+            return False
+    else:
         platform = getattr(source, "platform", None)
         adapters = getattr(gateway, "adapters", {}) or {}
         adapter = adapters.get(platform) or adapters.get(_platform_value(platform))
@@ -81,3 +85,7 @@ def _schedule_ack(gateway: Any, source: Any, chat_id: str, content: str) -> bool
         return True
     except Exception:
         return False
+
+
+def _supports_redacted_skip_logging(gateway: Any) -> bool:
+    return bool(getattr(gateway, "replyloop_redacted_skip_logging", False))

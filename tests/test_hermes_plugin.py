@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from replyloop.hermes_plugin import register
 from replyloop.hermes_plugin.delivery import HermesDeliveryAdapter
@@ -15,7 +18,7 @@ class FakePluginContext:
         self.tools = {}
         self.cli_commands = {}
         self.hooks = {}
-        self.dispatches = []
+        self.sends = []
         self.dispatch_result = {"success": True, "message_id": "provider-1"}
 
     def register_tool(self, **kwargs):
@@ -28,7 +31,10 @@ class FakePluginContext:
         self.hooks.setdefault(hook_name, []).append(callback)
 
     def dispatch_tool(self, tool_name, args, **kwargs):
-        self.dispatches.append((tool_name, args, kwargs))
+        raise AssertionError(f"unexpected registry dispatch: {tool_name}")
+
+    def replyloop_send_message(self, args):
+        self.sends.append(args)
         return json.dumps(self.dispatch_result)
 
 
@@ -54,7 +60,7 @@ class HermesPluginRegistrationTests(unittest.TestCase):
         result = json.loads(ctx.tools["replyloop_doctor"]["handler"]({"db": str(Path(tempfile.gettempdir()) / "replyloop-plugin-doctor.sqlite")}))
         self.assertIn("ok", result)
 
-    def test_cli_tick_uses_hermes_send_message_dispatch(self) -> None:
+    def test_cli_tick_uses_plugin_transport_seam(self) -> None:
         from datetime import datetime, timezone
         from replyloop.clock import FakeClock
         from replyloop.db import connect
@@ -77,8 +83,7 @@ class HermesPluginRegistrationTests(unittest.TestCase):
             handler = ctx.cli_commands["replyloop"]["handler_fn"]
             code = handler(argparse.Namespace(replyloop_args=["--db", str(db_path), "--json", "tick"]))
         self.assertEqual(code, 0)
-        self.assertEqual(ctx.dispatches[0][0], "send_message")
-        self.assertEqual(ctx.dispatches[0][1]["target"], "photon:c-a")
+        self.assertEqual(ctx.sends[0]["target"], "photon:c-a")
 
     def test_outage_remains_pending_and_recovery_sends_once(self) -> None:
         from datetime import datetime, timedelta, timezone
@@ -121,10 +126,39 @@ class HermesPluginRegistrationTests(unittest.TestCase):
             ]
             db.close()
         self.assertEqual((second.attempted, second.delivered), (1, 1))
-        self.assertEqual(len(ctx.dispatches), 2)
+        self.assertEqual(len(ctx.sends), 2)
         self.assertEqual([row["status"] for row in attempts], ["failure", "success"])
         self.assertEqual(success_events[-1]["provider_message_id"], "photon-msg-1")
         self.assertNotIn(phone, attempts[0]["error"])
+        self.assertNotIn("c-a", attempts[0]["error"])
+
+    def test_direct_hermes_helper_compatibility_without_registry_dispatch(self) -> None:
+        hermes_checkout = Path.home() / ".hermes" / "hermes-agent"
+        if hermes_checkout.exists() and str(hermes_checkout) not in sys.path:
+            sys.path.insert(0, str(hermes_checkout))
+        try:
+            from gateway.config import Platform
+            import tools.send_message_tool as send_message_tool
+        except Exception as exc:
+            self.skipTest(f"Hermes checkout unavailable: {exc}")
+
+        ctx = SimpleNamespace()
+        adapter = HermesDeliveryAdapter(ctx)
+        request = SimpleNamespace(
+            target={"platform": "telegram", "chat_id": "12345", "sender_id": "67890"},
+            text="hello",
+            idempotency_key="idem-1",
+        )
+        config = SimpleNamespace(platforms={Platform("telegram"): SimpleNamespace(enabled=True, token="token", extra={})})
+        with patch.object(send_message_tool, "load_gateway_config", return_value=config, create=True), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True, "message_id": "provider-2"})), \
+             patch("tools.send_message_tool._maybe_skip_cron_duplicate_send", return_value=None), \
+             patch("gateway.mirror.mirror_to_session", return_value=False):
+            outcome = adapter.deliver(request)  # type: ignore[arg-type]
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.provider_message_id, "provider-2")
 
 
 if __name__ == "__main__":

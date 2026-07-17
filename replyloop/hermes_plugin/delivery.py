@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 from replyloop.delivery import DeliveryOutcome, DeliveryRequest
@@ -11,8 +12,12 @@ from replyloop.delivery import DeliveryOutcome, DeliveryRequest
 _TARGETISH_RE = re.compile(r"([+]?\d[\d .()\-]{5,}\d|[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+|[A-Za-z0-9_-]{12,})")
 
 
-def redact_text(value: Any) -> str:
+def redact_text(value: Any, known_targets: list[Any] | tuple[Any, ...] = ()) -> str:
     text = str(value or "")
+    for target in known_targets:
+        raw = str(target or "")
+        if raw:
+            text = text.replace(raw, "[redacted]")
     return _TARGETISH_RE.sub("[redacted]", text)
 
 
@@ -37,10 +42,12 @@ class HermesDeliveryAdapter:
     def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
         self.requests.append(request)
         target = _format_target(request.target)
+        send_args = {"action": "send", "target": target, "message": request.text}
+        known_targets = _target_values(request.target, target)
         try:
-            raw = self.ctx.dispatch_tool("send_message", {"action": "send", "target": target, "message": request.text})
+            raw = _send_message(self.ctx, send_args)
         except Exception as exc:  # pragma: no cover - defensive; fakes cover normal failure shape
-            return DeliveryOutcome.failure(self.transport, f"dispatch failed for {redacted_label(target)}: {redact_text(exc)}")
+            return DeliveryOutcome.failure(self.transport, f"dispatch failed for {redacted_label(target)}: {redact_text(exc, known_targets)}")
         try:
             payload = json.loads(raw) if isinstance(raw, str) else raw
         except Exception:
@@ -53,7 +60,37 @@ class HermesDeliveryAdapter:
                 message_id = f"hermes:{request.idempotency_key}"
             return DeliveryOutcome.success(self.transport, message_id)
         error = payload.get("error") or "transport did not report success"
-        return DeliveryOutcome.failure(self.transport, f"send_message failed for {redacted_label(target)}: {redact_text(error)}")
+        return DeliveryOutcome.failure(self.transport, f"send_message failed for {redacted_label(target)}: {redact_text(error, known_targets)}")
+
+
+def _send_message(ctx: Any, args: dict[str, Any]) -> Any:
+    """Use a plugin-owned send seam, falling back to Hermes' direct helper.
+
+    Hermes intentionally does not register ``send_message`` as an agent-callable
+    tool, so plugin delivery must not go through ``PluginContext.dispatch_tool``.
+    Tests can inject ``ctx.replyloop_send_message`` to avoid live transport.
+    """
+
+    seam = getattr(ctx, "replyloop_send_message", None)
+    if callable(seam):
+        return seam(args)
+    helper = _load_send_message_helper()
+    return helper(args)
+
+
+def _load_send_message_helper() -> Callable[[dict[str, Any]], Any]:
+    from tools.send_message_tool import send_message_tool
+
+    return send_message_tool
+
+
+def _target_values(target: dict[str, Any], formatted: str) -> list[str]:
+    values = [formatted]
+    for key in ("platform", "chat_id", "sender_id", "user_id", "thread_id"):
+        value = target.get(key)
+        if value is not None:
+            values.append(str(value))
+    return values
 
 
 def _format_target(target: dict[str, Any]) -> str:
