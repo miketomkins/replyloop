@@ -113,6 +113,31 @@ class DatabaseTests(unittest.TestCase):
         assert done is not None
         self.assertEqual(done.status, OccurrenceStatus.DONE)
 
+    def test_due_query_includes_whole_second_before_fractional_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "state.sqlite")
+            db.add_reminder(sample_reminder())
+            db.add_occurrence(sample_occurrence("occurrence-whole-second"))
+
+            due = db.list_due_occurrences(datetime(2026, 1, 1, 9, 0, 0, 500000, tzinfo=UTC))
+            db.close()
+
+        self.assertEqual([item.id for item in due], ["occurrence-whole-second"])
+
+    def test_due_query_orders_fractional_second_after_whole_second(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "state.sqlite")
+            db.add_reminder(sample_reminder())
+            whole_second = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
+            fractional_second = datetime(2026, 1, 1, 9, 0, 0, 500000, tzinfo=UTC)
+            db.add_occurrence(Occurrence("occurrence-fractional", "reminder-alpha", fractional_second, due_at=fractional_second))
+            db.add_occurrence(Occurrence("occurrence-whole", "reminder-alpha", whole_second, due_at=whole_second))
+
+            due = db.list_due_occurrences(datetime(2026, 1, 1, 9, 0, 1, tzinfo=UTC))
+            db.close()
+
+        self.assertEqual([item.id for item in due], ["occurrence-whole", "occurrence-fractional"])
+
 
 if __name__ == "__main__":
     unittest.main()

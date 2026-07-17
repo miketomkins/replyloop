@@ -135,7 +135,10 @@ def to_utc(value: datetime) -> datetime:
 
 
 def datetime_to_iso(value: datetime) -> str:
-    return to_utc(value).isoformat().replace("+00:00", "Z")
+    # SQLite stores UTC timestamps as TEXT and range scans compare those values
+    # lexicographically. Always include six fractional digits so whole-second
+    # and fractional-second values sort in chronological order.
+    return to_utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def datetime_from_iso(value: str) -> datetime:
