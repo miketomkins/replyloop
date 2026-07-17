@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "public_repo_audit.py"
+
+
+def run_audit(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), str(root)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+class PublicRepoAuditTests(unittest.TestCase):
+    def test_clean_non_git_repository_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text(
+                "Synthetic examples may use example.com and 192.0.2.10.\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("passed", result.stdout)
+
+    def test_git_repository_scans_untracked_and_tracked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            (root / "README.md").write_text("clean public baseline\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            (root / "notes.md").write_text(
+                "path=" + "/".join(["", "home", "hermes", "project"]) + "\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("notes.md:1", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertNotIn("project", result.stderr)
+
+    def test_forbidden_content_is_reported_without_secret_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret_name = "api" + "_" + "key"
+            secret_value = "A" * 12 + "B" * 12
+            phone = "+" + "1" + " " + "202" + " " + "555" + " " + "0188"
+            private_ip = ".".join(["10", "1", "2", "3"])
+            (root / "bad.md").write_text(
+                f"{secret_name} = {secret_value}\ncall {phone}\nconnect {private_ip}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertIn("phone number pattern", result.stderr)
+            self.assertIn("private or loopback IP address", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+            self.assertNotIn(phone, result.stderr)
+            self.assertNotIn(private_ip, result.stderr)
+
+    def test_forbidden_artifact_path_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state.db").write_bytes(b"sqlite bytes")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("state.db: path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
+
+    def test_chat_and_sender_identifier_patterns_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chat = "chat" + "_" + "id"
+            sender = "sender" + "_" + "id"
+            (root / "ids.txt").write_text(
+                f"{chat}=syntheticButForbidden\n{sender}: anotherSyntheticValue\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ids.txt:1", result.stderr)
+            self.assertIn("ids.txt:2", result.stderr)
+            self.assertIn("chat or sender identifier pattern", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
