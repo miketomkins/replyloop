@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -179,12 +180,36 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertNotIn(str(path), result.stderr)
 
     def test_wheel_metadata_declares_empty_runtime_dependencies_and_entry_points(self) -> None:
-        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('dependencies = []', pyproject)
-        self.assertIn('replyloop = "replyloop.cli:main"', pyproject)
-        self.assertIn('[project.entry-points."hermes_agent.plugins"]', pyproject)
-        self.assertIn('replyloop = "replyloop.hermes_plugin"', pyproject)
-        self.assertIn('build-backend = "setuptools.build_meta"', pyproject)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", ".", "-w", str(out)],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            wheel = next(out.glob("replyloop-*.whl"), None)
+            self.assertIsNotNone(wheel, result.stdout + result.stderr)
+            assert wheel is not None
+
+            with zipfile.ZipFile(wheel) as archive:
+                names = set(archive.namelist())
+                metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+                entry_points_name = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
+                metadata = archive.read(metadata_name).decode("utf-8")
+                entry_points = archive.read(entry_points_name).decode("utf-8")
+
+        self.assertIn("Name: replyloop", metadata)
+        self.assertNotIn("Requires-Dist:", metadata)
+        self.assertIn("[console_scripts]", entry_points)
+        self.assertIn("replyloop = replyloop.cli:main", entry_points)
+        self.assertIn("[hermes_agent.plugins]", entry_points)
+        self.assertIn("replyloop = replyloop.hermes_plugin", entry_points)
+        for migration in ("001_initial.sql", "002_delivery_claim_ids.sql", "003_logical_delivery_identity.sql"):
+            self.assertIn(f"replyloop/migrations/{migration}", names)
 
     def test_ci_workflow_shape_runs_release_contract_steps(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

@@ -95,23 +95,6 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
-COMMIT_MESSAGE_RULES = {
-    "private key marker",
-    "assigned secret or token value",
-    "authorization bearer token",
-    "cloud access key marker",
-    "github token marker",
-    "openai token marker",
-    "gitlab token marker",
-    "slack token marker",
-    "google api key marker",
-    "stripe secret key marker",
-    "npm token marker",
-    "pypi token marker",
-    "xai token marker",
-    "age private key marker",
-}
-
 PATH_REDACTIONS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -180,6 +163,16 @@ def run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_git_bytes(root: Path, args: list[str]) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def git_files(root: Path) -> list[Path] | None:
     probe = run_git(root, ["rev-parse", "--is-inside-work-tree"])
     if probe.returncode != 0 or probe.stdout.strip() != "true":
@@ -217,6 +210,10 @@ def looks_text(path: Path) -> bool:
     except OSError:
         return False
     return b"\0" not in chunk
+
+
+def looks_text_bytes(content: bytes) -> bool:
+    return b"\0" not in content[:4096]
 
 
 def is_safe_example_ip(value: str) -> bool:
@@ -280,11 +277,11 @@ def scan_lines(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
                 yield Finding(path, line_no, "private or loopback IP address")
 
 
-def scan_commit_message(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
-    for line_no, line in enumerate(lines, start=1):
-        for rule, pattern in CHECKS:
-            if rule in COMMIT_MESSAGE_RULES and pattern.search(line):
-                yield Finding(path, line_no, rule)
+def scan_commit_message(root: Path, path: Path, lines: Iterable[str]) -> Iterable[Finding]:
+    repo_prefix = root.as_posix().rstrip("/") + "/"
+    historical_repo_prefix = re.compile(r"/(?:home|Users)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/replyloop/")
+    redacted_lines = (historical_repo_prefix.sub("REPO/", line.replace(repo_prefix, "REPO/")) for line in lines)
+    yield from scan_lines(path, redacted_lines)
 
 
 def audit(root: Path) -> list[Finding]:
@@ -309,18 +306,17 @@ def scan_git_history(root: Path) -> list[Finding]:
         message = run_git(root, ["show", "-s", "--format=%B", commit])
         if message.returncode == 0:
             message_path = root / ".git-history" / commit[:12] / "COMMIT_MESSAGE"
-            findings.extend(scan_commit_message(message_path, message.stdout.splitlines()))
+            findings.extend(scan_commit_message(root, message_path, message.stdout.splitlines()))
         tree = run_git(root, ["ls-tree", "-r", "--name-only", "-z", commit])
         if tree.returncode != 0:
             continue
         for rel in [item for item in tree.stdout.split("\0") if item]:
             history_path = root / ".git-history" / commit[:12] / rel
             findings.extend(scan_history_path(root, history_path, rel))
-            if Path(rel).suffix not in TEXT_SUFFIXES and Path(rel).name not in {"LICENSE", "README", "SECURITY", "CONTRIBUTING"}:
-                continue
-            blob = run_git(root, ["show", f"{commit}:{rel}"])
-            if blob.returncode == 0 and "\0" not in blob.stdout:
-                findings.extend(scan_lines(history_path, blob.stdout.splitlines()))
+            blob = run_git_bytes(root, ["cat-file", "-p", f"{commit}:{rel}"])
+            if blob.returncode == 0 and looks_text_bytes(blob.stdout):
+                text = blob.stdout.decode("utf-8", errors="replace")
+                findings.extend(scan_lines(history_path, text.splitlines()))
     return findings
 
 

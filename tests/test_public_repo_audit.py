@@ -568,6 +568,57 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("assigned secret or token value", result.stderr)
             self.assertNotIn(secret_value, result.stderr)
 
+    def test_git_history_commit_message_is_scanned_for_privacy_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            private_ip = ".".join(["10", "1", "2", "3"])
+            phone = "+" + "1" + " " + "202" + " " + "555" + " " + "0188"
+            sender = "sender" + "_" + "id"
+            private_host = "nas" + "." + "internal"
+            private_path = "/" + "home" + "/" + "alice" + "/" + "project"
+            message = f"bootstrap {private_ip} {phone} {sender}=123456789 {private_host} {private_path}"
+            self.assertEqual(git(root, "commit", "-m", message).returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("COMMIT_MESSAGE:1", result.stderr)
+            self.assertIn("private or loopback IP address", result.stderr)
+            self.assertIn("phone number pattern", result.stderr)
+            self.assertIn("chat or sender identifier pattern", result.stderr)
+            self.assertIn("private host name", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            for value in (private_ip, phone, "123456789", private_host, private_path):
+                self.assertNotIn(value, result.stderr)
+
+    def test_git_history_deleted_pem_private_key_blob_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            key_header = "-----BEGIN RSA PRIVATE" + " KEY-----"
+            key_path = root / "server.pem"
+            key_path.write_text(key_header + "\nsynthetic-body\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "server.pem").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add historical pem").returncode, 0)
+            key_path.unlink()
+            self.assertEqual(git(root, "add", "server.pem").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "remove historical pem").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-history/", result.stderr)
+            self.assertIn("server.pem:1", result.stderr)
+            self.assertIn("private key marker", result.stderr)
+            self.assertNotIn(key_header, result.stderr)
+
     def test_git_history_invalid_utf8_text_blob_does_not_crash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
