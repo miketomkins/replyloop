@@ -15,8 +15,8 @@ dependencies = []
 [project.scripts]
 replyloop = "replyloop.cli:main"
 
-[project.entry-points."hermes.plugins"]
-replyloop = "replyloop.__init__:main"
+[project.entry-points."hermes_agent.plugins"]
+replyloop = "replyloop.hermes_plugin"
 
 [tool.setuptools.packages.find]
 include = ["replyloop*"]
