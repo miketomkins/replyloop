@@ -596,6 +596,107 @@ class PublicRepoAuditTests(unittest.TestCase):
             for value in (private_ip, phone, "123456789", private_host, private_path):
                 self.assertNotIn(value, result.stderr)
 
+    def test_git_history_commit_message_absolute_replyloop_path_is_not_normalized_away(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            private_path = "/" + "home" + "/" + "alice" + "/" + "work" + "/" + "replyloop" + "/"
+            self.assertEqual(git(root, "commit", "-m", "bootstrap " + private_path).returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("COMMIT_MESSAGE:1", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertNotIn(private_path, result.stderr)
+
+    def test_sensitive_pathnames_are_reported_without_sensitive_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private_ip = ".".join(["10", "1", "2", "3"])
+            private_host = "nas" + "." + "internal"
+            phone = "202" + "555" + "0188"
+            sender = "sender" + "_" + "id" + "_123456789"
+            names = [
+                private_ip + ".txt",
+                private_host + ".txt",
+                phone + ".txt",
+                sender + ".txt",
+                "id_rsa",
+            ]
+            for name in names:
+                (root / name).write_text("safe\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("private or loopback IP address in path", result.stderr)
+            self.assertIn("private host name in path", result.stderr)
+            self.assertIn("phone number pattern in path", result.stderr)
+            self.assertIn("chat or sender identifier pattern in path", result.stderr)
+            self.assertIn("private key name in path", result.stderr)
+            for value in (private_ip, private_host, phone, sender):
+                self.assertNotIn(value, result.stderr)
+
+    def test_build_package_and_temporary_paths_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = [
+                root / "replyloop-0.1.0-py3-none-any.whl",
+                root / "replyloop-0.1.0.tar.gz",
+                root / "replyloop.egg-info" / "PKG-INFO",
+                root / "scratch.tmp",
+                root / "notes.swp",
+                root / "patch.orig",
+                root / "change.rej",
+                root / "build" / "artifact.txt",
+                root / "dist" / "artifact.txt",
+            ]
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("safe\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            for evidence in (
+                "replyloop-0.1.0-py3-none-any.whl: path",
+                "replyloop-0.1.0.tar.gz: path",
+                "replyloop.egg-info/PKG-INFO: path",
+                "scratch.tmp: path",
+                "notes.swp: path",
+                "patch.orig: path",
+                "change.rej: path",
+                "build/artifact.txt: path",
+                "dist/artifact.txt: path",
+            ):
+                self.assertIn(evidence, result.stderr)
+
+    def test_deleted_sensitive_history_path_is_reported_without_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            private_host = "nas" + "." + "internal"
+            path = root / (private_host + ".txt")
+            path.write_text("safe\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", path.name).returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add private path").returncode, 0)
+            path.unlink()
+            self.assertEqual(git(root, "add", path.name).returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "remove private path").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("private host name in path in git history", result.stderr)
+            self.assertNotIn(private_host, result.stderr)
+
     def test_git_history_deleted_pem_private_key_blob_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

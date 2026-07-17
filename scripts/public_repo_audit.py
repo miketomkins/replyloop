@@ -40,9 +40,28 @@ TEXT_SUFFIXES = {
 }
 
 ARTIFACT_PATH_RE = re.compile(
-    r"(^|/)(?:\.env(?:\..*)?|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|zip|tar|tgz|tar\.gz|log)|"
-    r"(?:auth(?:[._-].*)?|logs?|backups?|credentials?)(?:/|$)|.*(?:[._-]auth(?:[._-].*)?|secret|token|credentials?).*)",
+    r"(^|/)(?:"
+    r"\.env(?:\..*)?"
+    r"|(?:build|dist|logs?|backups?)(?:/|$)"
+    r"|.*\.egg-info(?:/|$)"
+    r"|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|zip|tar|tgz|tar\.gz|whl|log|pem|key|p12|pfx|tmp|swp|orig|rej)$"
+    r"|[^/]+\.tar\.gz$"
+    r"|(?:auth(?:[._-].*)?|credentials?)(?:/|$)"
+    r"|.*(?:[._-]auth(?:[._-].*)?|secret|token|credentials?|private[_-]?key).*)",
     re.IGNORECASE,
+)
+
+PATH_PRIVACY_CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private host name in path", re.compile(r"(?i)\b(?:" + "local" + "host" + r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:internal|local)\b(?![.-]))")),
+    (
+        "phone number pattern in path",
+        re.compile(r"(?<![\w.])(?:\+\d[\d .()\-]{7,}\d|\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4})(?![\w.])"),
+    ),
+    (
+        "chat or sender identifier pattern in path",
+        re.compile(r"(?i)(?:\b|['\"])(?:chat|sender)[_-]?id(?:\b|['\"]|[_-])\s*[:=._-]?\s*['\"]?[A-Za-z0-9_-]{6,}"),
+    ),
+    ("private key name in path", re.compile(r"(?i)(?:^|[._/-])(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|private[_-]?key)(?:[._/-]|$)")),
 )
 
 CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -136,10 +155,20 @@ def redact_path(value: str) -> str:
     redacted = value
     for pattern in PATH_REDACTIONS:
         redacted = pattern.sub("[REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)",
+        lambda match: "[REDACTED]" if is_forbidden_ip(match.group(0)) else match.group(0),
+        redacted,
+    )
+    redacted = IPV6_RE.sub(lambda match: "[REDACTED]" if is_forbidden_ip(match.group(0)) else match.group(0), redacted)
     return "/".join(redact_path_segment(segment) for segment in redacted.split("/"))
 
 
 def redact_path_segment(segment: str) -> str:
+    for _, pattern in PATH_PRIVACY_CHECKS:
+        stem = segment.rsplit(".", 1)[0]
+        if pattern.search(segment) or pattern.search(stem):
+            return "[REDACTED]"
     marker = SENSITIVE_NAME_RE.search(segment)
     if marker is None:
         return segment
@@ -241,6 +270,24 @@ def scan_path(root: Path, path: Path) -> Iterable[Finding]:
     rel = path.relative_to(root).as_posix()
     if ARTIFACT_PATH_RE.search(rel):
         yield Finding(path, None, "forbidden local artifact or credential-like path")
+    yield from scan_path_value(path, rel, "")
+
+
+def scan_path_value(path: Path, rel: str, suffix: str) -> Iterable[Finding]:
+    values = [rel]
+    values.extend(segment.rsplit(".", 1)[0] for segment in rel.split("/") if "." in segment)
+    for rule, pattern in PATH_PRIVACY_CHECKS:
+        if any(pattern.search(value) for value in values):
+            yield Finding(path, None, rule + suffix)
+    for value in values:
+        for match in re.finditer(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)", value):
+            if is_forbidden_ip(match.group(0)):
+                yield Finding(path, None, "private or loopback IP address in path" + suffix)
+                break
+        for match in IPV6_RE.finditer(value):
+            if is_forbidden_ip(match.group(0)):
+                yield Finding(path, None, "private or loopback IP address in path" + suffix)
+                break
 
 
 def scan_text(root: Path, path: Path) -> Iterable[Finding]:
@@ -279,8 +326,7 @@ def scan_lines(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
 
 def scan_commit_message(root: Path, path: Path, lines: Iterable[str]) -> Iterable[Finding]:
     repo_prefix = root.as_posix().rstrip("/") + "/"
-    historical_repo_prefix = re.compile(r"/(?:home|Users)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/replyloop/")
-    redacted_lines = (historical_repo_prefix.sub("REPO/", line.replace(repo_prefix, "REPO/")) for line in lines)
+    redacted_lines = (line.replace(repo_prefix, "REPO/") for line in lines)
     yield from scan_lines(path, redacted_lines)
 
 
@@ -323,6 +369,7 @@ def scan_git_history(root: Path) -> list[Finding]:
 def scan_history_path(root: Path, history_path: Path, rel: str) -> Iterable[Finding]:
     if ARTIFACT_PATH_RE.search(rel):
         yield Finding(history_path, None, "forbidden local artifact or credential-like path in git history")
+    yield from scan_path_value(history_path, rel, " in git history")
 
 
 def main(argv: list[str] | None = None) -> int:
