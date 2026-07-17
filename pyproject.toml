@@ -13,7 +13,7 @@ authors = [{name = "ReplyLoop maintainers"}]
 dependencies = []
 
 [project.scripts]
-replyloop = "replyloop.__init__:main"
+replyloop = "replyloop.cli:main"
 
 [project.entry-points."hermes.plugins"]
 replyloop = "replyloop.__init__:main"

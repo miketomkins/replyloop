@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "main"]
 __version__ = "0.1.0"
 
 
 def main() -> int:
-    """Placeholder console entry point for future CLI wiring."""
-    print("replyloop foundation installed")
-    return 0
+    """Console script entry point."""
+    from .cli import main as cli_main
+
+    return cli_main()
