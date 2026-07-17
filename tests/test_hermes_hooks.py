@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +16,7 @@ from replyloop.db import connect
 from replyloop.delivery import RecordingAdapter
 from replyloop.hermes_plugin.hooks import pre_gateway_dispatch
 from replyloop.hermes_plugin.privacy import _SKIP_LOG_MESSAGE, install_gateway_privacy_guard
-from replyloop.models import OccurrenceStatus
+from replyloop.models import OccurrenceStatus, datetime_from_iso
 from replyloop.service import ReminderService
 
 
@@ -136,6 +136,41 @@ class HermesHookTests(unittest.TestCase):
                 self.assertEqual(result["action"], "skip")
                 self.assertEqual(status, expected)
 
+    def test_photon_snooze_duration_command_consumed_and_overrides_due_time(self) -> None:
+        async def run_case():
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = self._seed_delivered(Path(tmp) / "state.sqlite")
+                old = os.environ.get("REPLYLOOP_DB")
+                os.environ["REPLYLOOP_DB"] = str(db_path)
+                try:
+                    before = datetime.now(timezone.utc)
+                    adapter = FakeAdapter()
+                    result = pre_gateway_dispatch(
+                        event=self._event("SNOOZE 30m", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
+                        gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}),
+                    )
+                    await asyncio.sleep(0)
+                    after = datetime.now(timezone.utc)
+                    db = connect(db_path)
+                    row = db.connection.execute("SELECT status, due_at FROM occurrences").fetchone()
+                    assert row is not None
+                    db.close()
+                finally:
+                    if old is None:
+                        os.environ.pop("REPLYLOOP_DB", None)
+                    else:
+                        os.environ["REPLYLOOP_DB"] = old
+            return result, adapter.sent, row["status"], datetime_from_iso(row["due_at"]), before, after
+
+        result, sent, status, due_at, before, after = asyncio.run(run_case())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "skip")
+        self.assertEqual(status, OccurrenceStatus.SNOOZED.value)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["content"], "Snoozed.")
+        self.assertGreaterEqual(due_at, before + timedelta(minutes=29, seconds=58))
+        self.assertLessEqual(due_at, after + timedelta(minutes=30, seconds=2))
+
     def test_other_identities_groups_and_unrelated_text_are_not_consumed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = self._seed_delivered(Path(tmp) / "state.sqlite")
@@ -144,6 +179,7 @@ class HermesHookTests(unittest.TestCase):
             try:
                 cases = [
                     self._event("DONE please", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
+                    self._event("SNOOZE soon", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
                     self._event("DONE", platform="telegram", chat_type="dm", chat_id="c-a", user_id="s-a"),
                     self._event("DONE", platform="photon", chat_type="group", chat_id="c-a", user_id="s-a"),
                     self._event("DONE", platform="photon", chat_type="dm", chat_id="c-b", user_id="s-a"),
@@ -155,7 +191,7 @@ class HermesHookTests(unittest.TestCase):
                     os.environ.pop("REPLYLOOP_DB", None)
                 else:
                     os.environ["REPLYLOOP_DB"] = old
-        self.assertEqual(results, [None, None, None, None, None])
+        self.assertEqual(results, [None, None, None, None, None, None])
 
     def test_ambiguous_equally_latest_occurrences_are_not_consumed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

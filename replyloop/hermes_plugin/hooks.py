@@ -9,7 +9,8 @@ from typing import Any, cast
 from replyloop.cli import resolve_db_path
 from replyloop.db import connect
 from replyloop.delivery import RecordingAdapter
-from replyloop.replies import ReplyIdentity
+from replyloop.errors import ValidationError
+from replyloop.replies import ReplyIdentity, parse_reply
 from replyloop.service import ReminderService
 
 from .delivery import redact_text, redacted_label
@@ -25,7 +26,11 @@ def pre_gateway_dispatch(*, event: Any, gateway: Any = None, session_store: Any 
     """Handle exact ReplyLoop commands before the gateway sends them to an LLM."""
 
     text = str(getattr(event, "text", "") or "").strip()
-    if text.upper() not in {"DONE", "SNOOZE", "CANCEL"}:
+    try:
+        parsed = parse_reply(text)
+    except ValidationError:
+        return None
+    if parsed is None:
         return None
     source = getattr(event, "source", None)
     platform = _platform_value(getattr(source, "platform", None))

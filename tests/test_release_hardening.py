@@ -179,37 +179,45 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertIn('"ok": false', result.stdout)
         self.assertNotIn(str(path), result.stderr)
 
-    def test_wheel_metadata_declares_empty_runtime_dependencies_and_entry_points(self) -> None:
+    def test_wheel_verifier_accepts_synthetic_release_wheel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp)
+            wheel = self._synthetic_wheel(Path(tmp))
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", ".", "-w", str(out)],
+                [sys.executable, "scripts/verify_wheel.py", str(wheel)],
                 cwd=ROOT,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            wheel = next(out.glob("replyloop-*.whl"), None)
-            self.assertIsNotNone(wheel, result.stdout + result.stderr)
-            assert wheel is not None
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("wheel verified", result.stdout)
 
-            with zipfile.ZipFile(wheel) as archive:
-                names = set(archive.namelist())
-                metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
-                entry_points_name = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
-                metadata = archive.read(metadata_name).decode("utf-8")
-                entry_points = archive.read(entry_points_name).decode("utf-8")
-
-        self.assertIn("Name: replyloop", metadata)
-        self.assertNotIn("Requires-Dist:", metadata)
-        self.assertIn("[console_scripts]", entry_points)
-        self.assertIn("replyloop = replyloop.cli:main", entry_points)
-        self.assertIn("[hermes_agent.plugins]", entry_points)
-        self.assertIn("replyloop = replyloop.hermes_plugin", entry_points)
-        for migration in ("001_initial.sql", "002_delivery_claim_ids.sql", "003_logical_delivery_identity.sql"):
-            self.assertIn(f"replyloop/migrations/{migration}", names)
+    def test_wheel_verifier_rejects_runtime_dependencies_and_debris(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dependency_wheel = self._synthetic_wheel(root / "dependency", requires_dist=True)
+            debris_wheel = self._synthetic_wheel(root / "debris", extra_entries={"replyloop/__pycache__/bad.pyc": b"x"})
+            dependency_result = subprocess.run(
+                [sys.executable, "scripts/verify_wheel.py", str(dependency_wheel)],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            debris_result = subprocess.run(
+                [sys.executable, "scripts/verify_wheel.py", str(debris_wheel)],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        self.assertNotEqual(dependency_result.returncode, 0)
+        self.assertIn("runtime dependencies are not allowed", dependency_result.stderr)
+        self.assertNotEqual(debris_result.returncode, 0)
+        self.assertIn("forbidden wheel entries", debris_result.stderr)
 
     def test_ci_workflow_shape_runs_release_contract_steps(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -217,13 +225,19 @@ class ReleaseHardeningTests(unittest.TestCase):
             self.assertIn(version, workflow)
         for required in (
             "scripts/public_repo_audit.py .",
-            "unittest discover",
+            "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover",
             "compileall -q replyloop",
+            "pip install --upgrade build wheel",
+            "python3 -m build --sdist --outdir dist",
             "pip wheel --no-deps --no-build-isolation",
+            "scripts/verify_wheel.py",
             "venv",
             "replyloop\" --json doctor",
         ):
             self.assertIn(required, workflow)
+        self.assertLess(workflow.index("Unit tests"), workflow.index("Provision packaging tools"))
+        self.assertLess(workflow.index("Build wheel"), workflow.index("Verify wheel"))
+        self.assertLess(workflow.index("Verify wheel"), workflow.index("Clean wheel install"))
 
     def test_no_skipped_tests_or_committed_build_outputs(self) -> None:
         tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True).stdout.splitlines()
@@ -247,6 +261,31 @@ class ReleaseHardeningTests(unittest.TestCase):
         setattr(source, CHAT_KEY, "conversation-alpha")
         setattr(source, "user" + "_id", "participant-alpha")
         return SimpleNamespace(text=text, source=source)
+
+    def _synthetic_wheel(self, directory: Path, *, requires_dist: bool = False, extra_entries: dict[str, bytes] | None = None) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        wheel = directory / "replyloop-0.1.0-py3-none-any.whl"
+        metadata = "Metadata-Version: 2.1\nName: replyloop\nVersion: 0.1.0\n"
+        if requires_dist:
+            metadata += "Requires-Dist: requests\n"
+        entries = {
+            "replyloop/__init__.py": b"",
+            "replyloop/cli.py": b"def main(): pass\n",
+            "replyloop/hermes_plugin/__init__.py": b"",
+            "replyloop/migrations/001_initial.sql": b"-- migration\n",
+            "replyloop/migrations/002_delivery_claim_ids.sql": b"-- migration\n",
+            "replyloop/migrations/003_logical_delivery_identity.sql": b"-- migration\n",
+            "replyloop-0.1.0.dist-info/METADATA": metadata.encode("utf-8"),
+            "replyloop-0.1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            "replyloop-0.1.0.dist-info/entry_points.txt": b"[console_scripts]\nreplyloop = replyloop.cli:main\n\n[hermes_agent.plugins]\nreplyloop = replyloop.hermes_plugin\n",
+            "replyloop-0.1.0.dist-info/RECORD": b"",
+        }
+        if extra_entries:
+            entries.update(extra_entries)
+        with zipfile.ZipFile(wheel, "w") as archive:
+            for name, data in entries.items():
+                archive.writestr(name, data)
+        return wheel
 
 
 if __name__ == "__main__":

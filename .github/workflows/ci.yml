@@ -20,19 +20,26 @@ jobs:
       - name: Public repository audit
         run: python3 scripts/public_repo_audit.py .
       - name: Unit tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Compile package
         run: python3 -m compileall -q replyloop
-      - name: Build wheel and source distribution
-        run: |
-          python3 -m pip install --upgrade build
-          python3 -m build --wheel --sdist --outdir dist
-      - name: Clean wheel install and doctor smoke test
+      - name: Provision packaging tools
+        run: python3 -m pip install --upgrade build wheel
+      - name: Build source distribution
+        run: python3 -m build --sdist --outdir dist
+      - name: Build wheel
         run: |
           out=$(mktemp -d)
           python3 -m pip wheel --no-deps --no-build-isolation . -w "$out"
-          wheel=$(python3 -c "from pathlib import Path; import sys; print(next(Path(sys.argv[1]).glob('replyloop-*.whl'), ''))" "$out")
-          python3 -c "import os,sys; p=sys.argv[1]; print('wheel verified: '+os.path.basename(p) if p and os.path.getsize(p)>0 else 'wheel missing'); raise SystemExit(0 if p and os.path.getsize(p)>0 else 1)" "$wheel"
+          mkdir -p dist
+          cp "$out"/replyloop-*.whl dist/
+      - name: Verify wheel
+        run: |
+          wheel=$(python3 -c "from pathlib import Path; import sys; print(next(Path('dist').glob('replyloop-*.whl'), ''))")
+          python3 scripts/verify_wheel.py "$wheel"
+      - name: Clean wheel install and doctor smoke test
+        run: |
+          wheel=$(python3 -c "from pathlib import Path; print(next(Path('dist').glob('replyloop-*.whl'), ''))")
           venv=$(mktemp -d)
           python3 -m venv "$venv"
           "$venv/bin/pip" install --no-index --no-deps "$wheel" >/dev/null
