@@ -31,6 +31,9 @@ ENV/
 *secret*
 *token*
 auth/
+auth.*
+*.auth
+*.auth.*
 
 # SQLite databases and sidecars
 *.db

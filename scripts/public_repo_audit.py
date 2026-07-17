@@ -41,7 +41,7 @@ TEXT_SUFFIXES = {
 
 ARTIFACT_PATH_RE = re.compile(
     r"(^|/)(?:\.env(?:\..*)?|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|log)|"
-    r"(?:auth|logs?|backups?|credentials?)(?:/|$)|.*(?:secret|token|credentials?).*)",
+    r"(?:auth(?:[._-].*)?|logs?|backups?|credentials?)(?:/|$)|.*(?:[._-]auth(?:[._-].*)?|secret|token|credentials?).*)",
     re.IGNORECASE,
 )
 
@@ -53,9 +53,13 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "assigned secret or token value",
         re.compile(
-            r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|credential)\b"
+            r"(?i)(?:\b|['\"])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|credential)(?:\b|['\"])"
             r"\s*[:=]\s*['\"]?[^'\"\s]{8,}"
         ),
+    ),
+    (
+        "authorization bearer token",
+        re.compile(r"(?i)\bauthorization\b\s*[:=]\s*['\"]?bearer\s+[A-Za-z0-9._~+/=-]{12,}"),
     ),
     ("cloud access key marker", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github token marker", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
@@ -69,11 +73,12 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "chat or sender identifier pattern",
-        re.compile(r"(?i)\b(?:chat|sender)[_-]?id\s*[:=]\s*['\"]?[A-Za-z0-9_-]{6,}"),
+        re.compile(r"(?i)(?:\b|['\"])(?:chat|sender)[_-]?id(?:\b|['\"])\s*[:=]\s*['\"]?[A-Za-z0-9_-]{6,}"),
     ),
 )
 
 IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])")
 
 
 @dataclass(frozen=True)
@@ -182,6 +187,9 @@ def scan_text(root: Path, path: Path) -> Iterable[Finding]:
             if pattern.search(line):
                 yield Finding(path, line_no, rule)
         for match in IP_RE.finditer(line):
+            if is_forbidden_ip(match.group(0)):
+                yield Finding(path, line_no, "private or loopback IP address")
+        for match in IPV6_RE.finditer(line):
             if is_forbidden_ip(match.group(0)):
                 yield Finding(path, line_no, "private or loopback IP address")
 

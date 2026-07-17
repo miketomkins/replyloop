@@ -112,6 +112,69 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("ids.txt:2", result.stderr)
             self.assertIn("chat or sender identifier pattern", result.stderr)
 
+    def test_quoted_json_keys_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret_name = "api" + "_" + "key"
+            chat = "chat" + "_" + "id"
+            (root / "fixture.json").write_text(
+                "{"
+                + f'"{secret_name}": "'
+                + ("S" * 24)
+                + '", '
+                + f'"{chat}": "syntheticTarget"'
+                + "}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("fixture.json:1", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertIn("chat or sender identifier pattern", result.stderr)
+
+    def test_auth_filename_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config"
+            config.mkdir()
+            (root / ("auth" + ".json")).write_text("{}\n", encoding="utf-8")
+            (config / ("auth" + ".json")).write_text("{}\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("auth.json: path", result.stderr)
+            self.assertIn("config/auth.json: path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
+
+    def test_authorization_bearer_token_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            header = "Authorization" + ": " + "Bearer" + " " + "abcde12345fghij67890"
+            (root / "headers.txt").write_text(header + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("headers.txt:1", result.stderr)
+            self.assertIn("authorization bearer token", result.stderr)
+            self.assertNotIn("abcde12345fghij67890", result.stderr)
+
+    def test_ipv6_loopback_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            loopback = ":" + ":" + "1"
+            (root / "network.txt").write_text("bind " + loopback + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("network.txt:1", result.stderr)
+            self.assertIn("private or loopback IP address", result.stderr)
+            self.assertNotIn(loopback, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
