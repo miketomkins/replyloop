@@ -18,6 +18,12 @@ ReplyLoop creates scheduled reminder occurrences with user-supplied title and me
 - Provide backup, doctor, and migration mechanisms for the local SQLite store.
 - Keep Hermes integration optional through platform-neutral adapters.
 
+## Reminder content contract
+
+Public creation surfaces require user-supplied `title` and `message` values. Stored deliveries render that exact content, then append due time and supported reply commands.
+
+The internal Python `ReminderService.create_reminder` API retains source-compatible defaults only for existing in-process callers: omitted `title` becomes `Reminder`, and omitted `message` becomes `Reminder is due.`. Those deterministic compatibility defaults are not a public user contract; CLI and Hermes tool callers must provide explicit content.
+
 ## Reply commands
 
 Supported commands are case-insensitive and whitespace-normalized:

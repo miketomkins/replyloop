@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -226,6 +227,7 @@ class ReleaseHardeningTests(unittest.TestCase):
         for required in (
             "scripts/public_repo_audit.py .",
             "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover",
+            "PYTHONPYCACHEPREFIX=\"$pycache\" python3 -m compileall -q replyloop",
             "compileall -q replyloop",
             "pip install --upgrade 'setuptools>=68' build wheel",
             "python3 -m build --sdist --outdir dist",
@@ -244,8 +246,11 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertLess(workflow.index("Clean wheel install"), workflow.index("Source cleanliness after build"))
 
     def test_compileall_wrapper_preserves_source_cleanliness(self) -> None:
+        if (ROOT / "__pycache__").exists():
+            shutil.rmtree(ROOT / "__pycache__")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            pycache_prefix = root / "pycache-prefix"
             package = root / "sample"
             package.mkdir()
             (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -257,6 +262,12 @@ class ReleaseHardeningTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "-m", "compileall", "-q", str(package)],
                 cwd=ROOT,
+                env={
+                    key: value
+                    for key, value in os.environ.items()
+                    if key not in {"PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX"}
+                }
+                | {"PYTHONPYCACHEPREFIX": str(pycache_prefix)},
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

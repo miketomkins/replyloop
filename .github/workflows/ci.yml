@@ -22,7 +22,10 @@ jobs:
       - name: Unit tests
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Compile package
-        run: python3 -m compileall -q replyloop
+        run: |
+          pycache=$(mktemp -d)
+          PYTHONPYCACHEPREFIX="$pycache" python3 -m compileall -q replyloop
+          rm -rf "$pycache"
       - name: Provision packaging tools
         run: python3 -m pip install --upgrade 'setuptools>=68' build wheel
       - name: Build source distribution
