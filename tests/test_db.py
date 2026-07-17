@@ -47,7 +47,7 @@ class DatabaseTests(unittest.TestCase):
             journal_mode = db.connection.execute("PRAGMA journal_mode").fetchone()[0]
             db.close()
 
-        self.assertEqual(versions, ["001_initial"])
+        self.assertEqual(versions, ["001_initial", "002_delivery_claim_ids"])
         self.assertEqual(foreign_keys, 1)
         self.assertEqual(journal_mode, "wal")
 

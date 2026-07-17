@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -39,10 +40,15 @@ class ReplyLoopDB:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.connection = sqlite3.connect(self.path)
+        self.connection = sqlite3.connect(self.path, timeout=30.0)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA busy_timeout = 30000")
+        try:
+            self.connection.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc):
+                raise
 
     def close(self) -> None:
         self.connection.close()
@@ -204,7 +210,15 @@ class ReplyLoopDB:
 
 def connect(path: str | Path) -> ReplyLoopDB:
     db = ReplyLoopDB(path)
-    db.migrate()
+    for attempt in range(5):
+        try:
+            db.migrate()
+            break
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc) or attempt == 4:
+                db.close()
+                raise
+            time.sleep(0.05 * (attempt + 1))
     return db
 
 
