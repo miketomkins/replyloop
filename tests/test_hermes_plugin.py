@@ -115,10 +115,15 @@ class HermesPluginRegistrationTests(unittest.TestCase):
             db = connect(db_path)
             second = ReminderService(db, HermesDeliveryAdapter(ctx), clock).tick()
             attempts = db.connection.execute("SELECT status, error FROM delivery_attempts ORDER BY created_at, id").fetchall()
+            success_events = [
+                json.loads(row["payload_json"])
+                for row in db.connection.execute("SELECT payload_json FROM events WHERE event_type = ? ORDER BY id", ("delivery.succeeded",)).fetchall()
+            ]
             db.close()
         self.assertEqual((second.attempted, second.delivered), (1, 1))
         self.assertEqual(len(ctx.dispatches), 2)
         self.assertEqual([row["status"] for row in attempts], ["failure", "success"])
+        self.assertEqual(success_events[-1]["provider_message_id"], "photon-msg-1")
         self.assertNotIn(phone, attempts[0]["error"])
 
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Coroutine
+from typing import Any, cast
 
 from replyloop.cli import resolve_db_path
 from replyloop.db import connect
@@ -42,7 +43,7 @@ def pre_gateway_dispatch(*, event: Any, gateway: Any = None, session_store: Any 
 
     if not result.handled:
         return None
-    if not _schedule_ack(gateway, getattr(source, "platform", None), chat_id, ACK_TEXT.get(result.command.value if result.command else "", "Updated.")):
+    if not _schedule_ack(gateway, source, chat_id, ACK_TEXT.get(result.command.value if result.command else "", "Updated.")):
         return {"action": "allow", "reason": f"replyloop-ack-unavailable:{redacted_label(chat_id)}"}
     return {"action": "skip", "reason": "replyloop-command-handled"}
 
@@ -51,11 +52,20 @@ def _platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
-def _schedule_ack(gateway: Any, platform: Any, chat_id: str, content: str) -> bool:
+def _schedule_ack(gateway: Any, source: Any, chat_id: str, content: str) -> bool:
     if gateway is None:
         return False
-    adapters = getattr(gateway, "adapters", {}) or {}
-    adapter = adapters.get(platform) or adapters.get(_platform_value(platform))
+    adapter = None
+    adapter_for_source = getattr(gateway, "_adapter_for_source", None)
+    if callable(adapter_for_source):
+        try:
+            adapter = adapter_for_source(source)
+        except Exception:
+            adapter = None
+    if adapter is None:
+        platform = getattr(source, "platform", None)
+        adapters = getattr(gateway, "adapters", {}) or {}
+        adapter = adapters.get(platform) or adapters.get(_platform_value(platform))
     if adapter is None:
         return False
     send = getattr(adapter, "send", None)
@@ -66,7 +76,8 @@ def _schedule_ack(gateway: Any, platform: Any, chat_id: str, content: str) -> bo
     except RuntimeError:
         return False
     try:
-        loop.create_task(send(**{"chat" + "_id": chat_id, "content": content, "metadata": {"replyloop_ack": True}}))
+        ack_coro = cast(Coroutine[Any, Any, Any], send(chat_id, content, metadata={"replyloop_ack": True}))
+        loop.create_task(ack_coro)
         return True
     except Exception:
         return False
