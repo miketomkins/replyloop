@@ -50,15 +50,15 @@ The `--script` value is relative to the operator's Hermes scripts directory. The
 
 ## Tools
 
-The plugin registers JSON tools for create, list, get, pause, resume, cancel, tick, and doctor operations. Tool handlers return JSON strings, catch exceptions, and redact target-like identifiers from errors.
+The plugin registers JSON tools for create, list, get, pause, resume, cancel, tick, and doctor operations. Create requires user-visible `title` and `message` fields, stores them on the reminder, and list/get return both fields. Tool handlers return JSON strings, catch exceptions, and redact target-like identifiers from errors.
 
 ## Delivery bridge
 
-Hermes delivery builds a platform target from the stored ReplyLoop target and sends the reminder text through Hermes `send_message`. If the Hermes transport reports missing or false success, ReplyLoop records a failure and keeps the occurrence pending for retry.
+Hermes delivery builds a platform target from the stored ReplyLoop target and sends the stored title/message plus due time and supported commands through Hermes `send_message`. Supported commands are `DONE`, `SNOOZE`, `SNOOZE <duration>`, and `CANCEL`. If the Hermes transport reports missing or false success, ReplyLoop records a failure and keeps the occurrence pending for retry.
 
 ## Photon reply handling
 
-The gateway hook runs before normal dispatch and only handles exact `DONE`, `SNOOZE`, or `CANCEL` text from exact Photon direct-message targets that match an open ReplyLoop occurrence. It rejects group traffic, other platforms, wrong senders, ambiguous matches, and unrelated text so those messages continue through normal Hermes conversation handling.
+The gateway hook runs before normal dispatch and only handles exact `DONE`, `SNOOZE`, `SNOOZE <duration>`, or `CANCEL` text from exact Photon direct-message targets that match an open ReplyLoop occurrence. It rejects group traffic, other platforms, wrong senders, ambiguous matches, and unrelated text so those messages continue through normal Hermes conversation handling.
 
 After a durable database transition, the hook schedules a short acknowledgement through the live Photon adapter and returns `action=skip`. Plugin registration installs a narrowly scoped logging filter on Hermes gateway logs so ReplyLoop handled-skip records render a one-way chat label instead of a raw chat identifier. It does not mutate the shared gateway event object, so later plugins still receive the original routing identity.
 

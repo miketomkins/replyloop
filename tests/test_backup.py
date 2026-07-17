@@ -24,7 +24,7 @@ class BackupTests(unittest.TestCase):
             source = Path(tmp) / "source.db"
             destination = Path(tmp) / "copy.db"
             db = connect(source)
-            db.add_reminder(Reminder("r1", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["09:00"]}, "UTC"))
+            db.add_reminder(Reminder("r1", '{"platform":"telegram","chat_id":"c1"}', "Reminder r1", "Reminder r1 is due.", {"kind": "daily", "times": ["09:00"]}, "UTC"))
             db.close()
             payload = backup_database(source, destination)
             with sqlite3.connect(f"file:{destination}?mode=ro", uri=True) as check:
@@ -47,10 +47,10 @@ class BackupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source.db"
             db = connect(source)
-            db.add_reminder(Reminder("before", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["09:00"]}, "UTC"))
+            db.add_reminder(Reminder("before", '{"platform":"telegram","chat_id":"c1"}', "Reminder before", "Reminder before is due.", {"kind": "daily", "times": ["09:00"]}, "UTC"))
             with self.assertRaisesRegex(Exception, "must not be the live source"):
                 backup_database(source, Path(tmp) / "nested" / ".." / "source.db")
-            db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["10:00"]}, "UTC"))
+            db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', "Reminder after", "Reminder after is due.", {"kind": "daily", "times": ["10:00"]}, "UTC"))
             db.close()
             with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as check:
                 reminders = [row[0] for row in check.execute("SELECT id FROM reminders ORDER BY id").fetchall()]
@@ -74,14 +74,14 @@ class BackupTests(unittest.TestCase):
             try:
                 reader.execute("BEGIN")
                 reader.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()
-                db.add_reminder(Reminder("before", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["09:00"]}, "UTC"))
+                db.add_reminder(Reminder("before", '{"platform":"telegram","chat_id":"c1"}', "Reminder before", "Reminder before is due.", {"kind": "daily", "times": ["09:00"]}, "UTC"))
                 wal_path = Path(str(source) + "-wal")
                 self.assertTrue(wal_path.exists())
 
                 with self.assertRaisesRegex(Exception, "must not be the live source"):
                     backup_database(source, wal_path)
 
-                db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["10:00"]}, "UTC"))
+                db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', "Reminder after", "Reminder after is due.", {"kind": "daily", "times": ["10:00"]}, "UTC"))
             finally:
                 reader.close()
                 db.close()
@@ -117,7 +117,7 @@ class BackupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.db"
             db = connect(path)
-            db.add_reminder(Reminder("r2", '{"platform":"telegram","chat_id":"c2"}', {"kind": "daily", "times": ["09:00"]}, "UTC"))
+            db.add_reminder(Reminder("r2", '{"platform":"telegram","chat_id":"c2"}', "Reminder r2", "Reminder r2 is due.", {"kind": "daily", "times": ["09:00"]}, "UTC"))
             db.close()
             payload = doctor(path)
         self.assertTrue(payload["doctor"]["ok"])
@@ -134,7 +134,7 @@ class BackupTests(unittest.TestCase):
             db = connect(path)
             scheduled = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
             snoozed_until = scheduled + timedelta(hours=1)
-            db.add_reminder(Reminder("r-snooze", '{"platform":"telegram","chat_id":"c1"}', {"kind": "once", "at": "2026-01-01T09:00:00Z"}, "UTC"))
+            db.add_reminder(Reminder("r-snooze", '{"platform":"telegram","chat_id":"c1"}', "Reminder snooze", "Reminder snooze is due.", {"kind": "once", "at": "2026-01-01T09:00:00Z"}, "UTC"))
             db.add_occurrence(Occurrence("o-snooze", "r-snooze", scheduled, OccurrenceStatus.SNOOZED, due_at=snoozed_until))
             db.close()
 
@@ -149,7 +149,7 @@ class BackupTests(unittest.TestCase):
             path = Path(tmp) / "state.db"
             db = connect(path)
             due_at = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
-            db.add_reminder(Reminder("r-due", '{"platform":"telegram","chat_id":"c1"}', {"kind": "once", "at": "2026-01-01T09:00:00Z"}, "UTC"))
+            db.add_reminder(Reminder("r-due", '{"platform":"telegram","chat_id":"c1"}', "Reminder due", "Reminder due is due.", {"kind": "once", "at": "2026-01-01T09:00:00Z"}, "UTC"))
             db.add_occurrence(Occurrence("o-due", "r-due", due_at, OccurrenceStatus.DUE, due_at=due_at))
             db.close()
 

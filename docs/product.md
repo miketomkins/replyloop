@@ -1,6 +1,6 @@
 # Product behavior
 
-ReplyLoop creates scheduled reminder occurrences, records delivery attempts, retries failed transports, escalates unanswered delivered reminders, and resolves exact user replies.
+ReplyLoop creates scheduled reminder occurrences with user-supplied title and message content, records delivery attempts, retries failed transports, escalates unanswered delivered reminders, and resolves exact user replies.
 
 ## MVP capabilities
 
@@ -12,6 +12,7 @@ ReplyLoop creates scheduled reminder occurrences, records delivery attempts, ret
 - Mark an occurrence delivered only after a transport success.
 - Keep failed deliveries retryable without consuming escalation steps.
 - Resolve exact `DONE`, `SNOOZE`, `SNOOZE <duration>`, and `CANCEL` commands for the matching direct-message target.
+- Render deliveries from stored title and message content, followed by due time and supported reply commands.
 - Ignore wrong senders, wrong chats, group traffic, unrelated text, and ambiguous latest matches.
 - Preserve append-only event history and immutable delivery attempts.
 - Provide backup, doctor, and migration mechanisms for the local SQLite store.

@@ -12,7 +12,7 @@ Simple reminder bots usually guess from free-form chat, lose state during transp
 python3 -m pip install .
 export REPLYLOOP_DB="$(mktemp -d)/replyloop.db"
 replyloop --json doctor
-replyloop --json create --id demo --daily --time 09:00 --timezone UTC --platform synthetic --chat example-chat --sender example-sender
+replyloop --json create --id demo --title "Daily check-in" --message "Send the project update." --daily --time 09:00 --timezone UTC --platform synthetic --chat example-chat --sender example-sender
 replyloop --json tick
 replyloop --json reply --platform synthetic --chat example-chat --sender example-sender --chat-type dm DONE
 ```
@@ -36,7 +36,7 @@ Weekly days use Monday `0` through Sunday `6`. Daily and weekly schedules may in
 Escalation is per reminder:
 
 ```bash
-replyloop create --id demo --daily --time 09:00 --timezone UTC --platform synthetic --chat example-chat --sender example-sender --snooze 30 --escalation 10 --escalation 60 --max-deliveries 3
+replyloop create --id demo --title "Daily check-in" --message "Send the project update." --daily --time 09:00 --timezone UTC --platform synthetic --chat example-chat --sender example-sender --snooze 30 --escalation 10 --escalation 60 --max-deliveries 3
 ```
 
 Transport retry is separate from escalation. A failed transport does not count as a delivered user-visible reminder.
@@ -54,7 +54,7 @@ Groups are ignored by reply handling. Wrong senders, wrong chats, unrelated text
 
 ## CLI reference
 
-- `create`: create a reminder from `--once-at`, `--daily`, `--weekly`, or `--schedule-json`.
+- `create`: create a reminder from `--once-at`, `--daily`, `--weekly`, or `--schedule-json`. Public creation requires `--title` and `--message`; delivered reminders render that stored content plus due time and supported reply commands.
 - `list`: list reminders, optionally filtered by status.
 - `show`: show one reminder and its occurrences.
 - `pause`: pause an active reminder.

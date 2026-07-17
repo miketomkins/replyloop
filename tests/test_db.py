@@ -18,6 +18,8 @@ def sample_reminder(identifier: str = "reminder-alpha") -> Reminder:
     return Reminder(
         id=identifier,
         target="synthetic-direct-target",
+        title="Check in",
+        message="Send the update.",
         schedule={"kind": "daily", "times": ["09:00"]},
         timezone="UTC",
         default_snooze_minutes=45,
@@ -35,7 +37,7 @@ def sample_occurrence(identifier: str = "occurrence-alpha") -> Occurrence:
 class DatabaseTests(unittest.TestCase):
     def test_reminder_malformed_timezone_key_raises_validation_error(self) -> None:
         with self.assertRaises(ValidationError):
-            Reminder(id="reminder-bad-zone", target="synthetic-direct-target", schedule={"kind": "daily", "times": ["09:00"]}, timezone="../UTC")
+            Reminder(id="reminder-bad-zone", target="synthetic-direct-target", title="Bad zone", message="Should fail", schedule={"kind": "daily", "times": ["09:00"]}, timezone="../UTC")
 
     def test_migration_is_idempotent_and_sets_pragmas(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,7 +49,7 @@ class DatabaseTests(unittest.TestCase):
             journal_mode = db.connection.execute("PRAGMA journal_mode").fetchone()[0]
             db.close()
 
-        self.assertEqual(versions, ["001_initial", "002_delivery_claim_ids", "003_logical_delivery_identity"])
+        self.assertEqual(versions, ["001_initial", "002_delivery_claim_ids", "003_logical_delivery_identity", "004_reminder_content_and_receipts"])
         self.assertEqual(foreign_keys, 1)
         self.assertEqual(journal_mode, "wal")
 
@@ -64,6 +66,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         assert loaded is not None
         self.assertEqual(loaded.timezone, "UTC")
+        self.assertEqual(loaded.title, "Check in")
+        self.assertEqual(loaded.message, "Send the update.")
         self.assertEqual(loaded.schedule, {"kind": "daily", "times": ["09:00"]})
         self.assertEqual(event.id, 1)
         self.assertEqual([item.event_type for item in events], ["reminder.created"])

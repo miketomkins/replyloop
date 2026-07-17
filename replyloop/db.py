@@ -251,13 +251,15 @@ def _insert_reminder(connection: sqlite3.Connection, reminder: Reminder) -> None
     connection.execute(
         """
         INSERT INTO reminders(
-            id, target, schedule_json, timezone, status, default_snooze_minutes,
+            id, target, title, message, schedule_json, timezone, status, default_snooze_minutes,
             escalation_minutes_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             reminder.id,
             reminder.target,
+            reminder.title,
+            reminder.message,
             json.dumps(reminder.schedule, sort_keys=True, separators=(",", ":")),
             reminder.timezone,
             reminder.status.value,
@@ -293,8 +295,8 @@ def _insert_delivery_attempt(connection: sqlite3.Connection, attempt: DeliveryAt
         """
         INSERT INTO delivery_attempts(
             id, occurrence_id, logical_delivery_id, attempted_at, status,
-            transport, error, applied_to_occurrence, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            transport, error, provider_message_id, applied_to_occurrence, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             attempt.id,
@@ -304,6 +306,7 @@ def _insert_delivery_attempt(connection: sqlite3.Connection, attempt: DeliveryAt
             attempt.status.value,
             attempt.transport,
             attempt.error,
+            attempt.provider_message_id,
             int(attempt.applied_to_occurrence),
             datetime_to_iso(attempt.created_at),
         ),
@@ -333,6 +336,8 @@ def _row_to_reminder(row: sqlite3.Row) -> Reminder:
     return Reminder(
         id=row["id"],
         target=row["target"],
+        title=row["title"],
+        message=row["message"],
         schedule=json.loads(row["schedule_json"]),
         timezone=row["timezone"],
         status=ReminderStatus(row["status"]),
@@ -375,6 +380,7 @@ def delivery_attempt_from_row(row: sqlite3.Row) -> DeliveryAttempt:
         status=DeliveryStatus(row["status"]),
         transport=row["transport"],
         error=row["error"],
+        provider_message_id=row["provider_message_id"],
         applied_to_occurrence=bool(row["applied_to_occurrence"]),
         created_at=datetime_from_iso(row["created_at"]),
     )

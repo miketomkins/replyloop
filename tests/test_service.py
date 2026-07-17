@@ -89,6 +89,8 @@ def create_daily(service: ReminderService, *, max_deliveries: int = 1, repeat_la
     service.create_reminder(
         reminder_id="reminder-1",
         target=TARGET,
+        title="Daily update",
+        message="Send the concise project update.",
         schedule={"kind": "daily", "times": ["09:00"]},
         timezone="UTC",
         default_snooze_minutes=30,
@@ -113,6 +115,7 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(second.created, 0)
         self.assertEqual(len(occurrences), 1)
         self.assertEqual(len(adapter.requests), 1)
+        self.assertEqual(adapter.requests[0].text, "Daily update\nSend the concise project update.\nDue: 2026-01-01T09:00:00.000000Z\nReply DONE, SNOOZE <duration>, or CANCEL.")
         self.assertIn("delivery.succeeded", events)
 
     def test_pause_during_in_flight_delivery_applies_success_without_stranding_claim(self) -> None:
@@ -216,13 +219,14 @@ class ServiceLifecycleTests(unittest.TestCase):
             for thread in threads:
                 thread.join()
             check = connect(path)
-            attempts = check.connection.execute("SELECT status FROM delivery_attempts").fetchall()
+            attempts = check.connection.execute("SELECT status, provider_message_id FROM delivery_attempts").fetchall()
             occurrence = check.connection.execute("SELECT status FROM occurrences").fetchone()["status"]
             check.close()
         self.assertEqual(exceptions, [])
         self.assertEqual(len(adapter.requests), 1)
         self.assertEqual(sum(result.attempted for result in results), 1)
         self.assertEqual([row["status"] for row in attempts], ["success"])
+        self.assertEqual([row["provider_message_id"] for row in attempts], ["msg-1"])
         self.assertEqual(occurrence, "delivered")
 
     def test_successful_delivery_starts_escalation_clock(self) -> None:

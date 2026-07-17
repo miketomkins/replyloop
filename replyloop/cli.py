@@ -22,7 +22,7 @@ from .models import Event, OccurrenceStatus, ReminderStatus, datetime_to_iso, ut
 from .replies import ReplyIdentity
 from .service import ReminderService
 
-EXPECTED_SCHEMA_VERSION = "003_logical_delivery_identity"
+EXPECTED_SCHEMA_VERSION = "004_reminder_content_and_receipts"
 
 
 class CLIError(Exception):
@@ -87,6 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     create = sub.add_parser("create", parents=[common], help="create a reminder")
     create.add_argument("--id", dest="reminder_id", help="stable reminder id. Defaults to a generated id.")
+    create.add_argument("--title", required=True, help="user-visible reminder title")
+    create.add_argument("--message", required=True, help="user-visible reminder message")
     create.add_argument("--schedule-json", help="explicit schedule JSON object")
     create.add_argument("--once-at", help="create a once schedule at an ISO datetime")
     create.add_argument("--daily", action="store_true", help="create a daily schedule")
@@ -180,6 +182,8 @@ def create_reminder(db: ReplyLoopDB, args: argparse.Namespace) -> dict[str, Any]
         target=target,
         schedule=schedule,
         timezone=args.timezone,
+        title=args.title,
+        message=args.message,
         default_snooze_minutes=args.snooze,
         intervals_minutes=tuple(args.escalation),
         max_deliveries=args.max_deliveries,
@@ -390,6 +394,8 @@ def row_to_public_reminder(row: sqlite3.Row) -> dict[str, Any]:
         raise CLIError("reminder not found", 1)
     return {
         "id": row["id"],
+        "title": row["title"],
+        "message": row["message"],
         "schedule": json.loads(row["schedule_json"]),
         "timezone": row["timezone"],
         "status": row["status"],

@@ -18,12 +18,12 @@ No database path is stored in Git. Use environment variables or scheduler config
 Use one schedule mode per create command:
 
 ```sh
-replyloop create --id demo --daily --time 09:00 --timezone UTC --platform synthetic --chat example-chat --sender example-sender
-replyloop create --once-at 2026-01-01T09:00:00Z --timezone UTC --platform synthetic --chat example-chat --sender example-sender
-replyloop create --weekly --weekday 0 --weekday 4 --time 17:30 --timezone UTC --platform synthetic --chat example-chat --sender example-sender
+replyloop create --id demo --title "Daily check-in" --message "Send the project update." --daily --time 09:00 --timezone UTC --platform synthetic --chat example-chat --sender example-sender
+replyloop create --title "One-time check-in" --message "Send the launch note." --once-at 2026-01-01T09:00:00Z --timezone UTC --platform synthetic --chat example-chat --sender example-sender
+replyloop create --title "Weekly review" --message "Review open loops." --weekly --weekday 0 --weekday 4 --time 17:30 --timezone UTC --platform synthetic --chat example-chat --sender example-sender
 ```
 
-`--target` also accepts an equivalent JSON object when values are synthetic placeholders.
+`--target` also accepts an equivalent JSON object when values are synthetic placeholders. Public create commands require `--title` and `--message`; ReplyLoop stores those fields and uses them for every delivery.
 
 Validation errors name the field or flag combination to fix and avoid printing stored targets.
 

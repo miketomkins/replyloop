@@ -47,7 +47,7 @@ def seed_due(tmp: str, reminder_id: str, chat: str, sender: str | None = None) -
 class CLITests(unittest.TestCase):
     def test_create_list_show_json_roundtrip_without_target_leak(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            created = run_cli(tmp, "--json", "create", "--id", "r1", "--daily", "--time", "09:00", "--timezone", "UTC", "--platform", "telegram", "--chat", "c1", "--sender", "s1", "--snooze", "15", "--escalation", "10", "--max-deliveries", "2")
+            created = run_cli(tmp, "--json", "create", "--id", "r1", "--title", "Water plants", "--message", "Give the fern a drink", "--daily", "--time", "09:00", "--timezone", "UTC", "--platform", "telegram", "--chat", "c1", "--sender", "s1", "--snooze", "15", "--escalation", "10", "--max-deliveries", "2")
             listed = run_cli(tmp, "--json", "list")
             shown = run_cli(tmp, "--json", "show", "r1")
         self.assertEqual(created.returncode, 0, created.stderr)
@@ -55,22 +55,27 @@ class CLITests(unittest.TestCase):
         self.assertEqual(shown.returncode, 0, shown.stderr)
         payload = json.loads(created.stdout)
         self.assertEqual(payload["reminder"]["id"], "r1")
+        self.assertEqual(payload["reminder"]["title"], "Water plants")
+        self.assertEqual(payload["reminder"]["message"], "Give the fern a drink")
         self.assertEqual(payload["reminder"]["escalation_minutes"], [10])
         self.assertNotIn("c1", created.stdout + listed.stdout + shown.stdout)
-        self.assertEqual(json.loads(listed.stdout)["reminders"][0]["id"], "r1")
+        listed_reminder = json.loads(listed.stdout)["reminders"][0]
+        self.assertEqual(listed_reminder["id"], "r1")
+        self.assertEqual(listed_reminder["title"], "Water plants")
+        self.assertEqual(json.loads(shown.stdout)["reminder"]["message"], "Give the fern a drink")
         self.assertEqual(json.loads(shown.stdout)["occurrences"], [])
 
     def test_create_accepts_schedule_json_and_actionable_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ok = run_cli(tmp, "--json", "create", "--id", "r2", "--schedule-json", '{"kind":"once","at":"2026-01-01T09:00:00Z"}', "--timezone", "UTC", "--target", json.dumps({"platform": "telegram", CHAT_KEY: "c2"}))
-            bad = run_cli(tmp, "--json", "create", "--id", "bad", "--daily", "--timezone", "UTC", "--platform", "telegram", "--chat", "c2")
+            ok = run_cli(tmp, "--json", "create", "--id", "r2", "--title", "Custom", "--message", "Custom body", "--schedule-json", '{"kind":"once","at":"2026-01-01T09:00:00Z"}', "--timezone", "UTC", "--target", json.dumps({"platform": "telegram", CHAT_KEY: "c2"}))
+            bad = run_cli(tmp, "--json", "create", "--id", "bad", "--title", "Bad", "--message", "Bad body", "--daily", "--timezone", "UTC", "--platform", "telegram", "--chat", "c2")
         self.assertEqual(ok.returncode, 0, ok.stderr)
         self.assertEqual(bad.returncode, 2)
         self.assertIn("--daily requires", json.loads(bad.stderr)["error"]["message"])
 
     def test_pause_resume_cancel_and_missing_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_cli(tmp, "create", "--id", "r3", "--once-at", "2026-01-01T09:00:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c3").returncode, 0)
+            self.assertEqual(run_cli(tmp, "create", "--id", "r3", "--title", "Pause me", "--message", "Pause body", "--once-at", "2026-01-01T09:00:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c3").returncode, 0)
             paused = run_cli(tmp, "--json", "pause", "r3")
             resumed = run_cli(tmp, "--json", "resume", "r3")
             cancelled = run_cli(tmp, "--json", "cancel", "r3")
@@ -82,7 +87,7 @@ class CLITests(unittest.TestCase):
 
     def test_status_transitions_reject_cancelled_resume_and_double_pause(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_cli(tmp, "create", "--id", "r-status", "--once-at", "2020-01-01T00:01:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c-status").returncode, 0)
+            self.assertEqual(run_cli(tmp, "create", "--id", "r-status", "--title", "Status", "--message", "Status body", "--once-at", "2020-01-01T00:01:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c-status").returncode, 0)
             paused = run_cli(tmp, "--json", "pause", "r-status")
             double_pause = run_cli(tmp, "--json", "pause", "r-status")
         self.assertEqual(paused.returncode, 0, paused.stderr)
@@ -161,8 +166,8 @@ class CLITests(unittest.TestCase):
             db = connect(path)
             due_at = datetime(2020, 1, 1, 0, 1, tzinfo=UTC)
             future_due_at = datetime(2099, 1, 1, 0, 1, tzinfo=UTC)
-            db.add_reminder(Reminder("r-doctor-due", json.dumps({"platform": "telegram", CHAT_KEY: "conversation-due"}), {"kind": "once", "at": "2020-01-01T00:01:00Z"}, "UTC"))
-            db.add_reminder(Reminder("r-doctor-snoozed", json.dumps({"platform": "telegram", CHAT_KEY: "conversation-snoozed"}), {"kind": "once", "at": "2099-01-01T00:01:00Z"}, "UTC"))
+            db.add_reminder(Reminder("r-doctor-due", json.dumps({"platform": "telegram", CHAT_KEY: "conversation-due"}), "Due title", "Due message", {"kind": "once", "at": "2020-01-01T00:01:00Z"}, "UTC"))
+            db.add_reminder(Reminder("r-doctor-snoozed", json.dumps({"platform": "telegram", CHAT_KEY: "conversation-snoozed"}), "Snoozed title", "Snoozed message", {"kind": "once", "at": "2099-01-01T00:01:00Z"}, "UTC"))
             db.add_occurrence(Occurrence("o-doctor-due", "r-doctor-due", due_at, OccurrenceStatus.DUE, due_at=due_at))
             db.add_occurrence(Occurrence("o-doctor-snoozed", "r-doctor-snoozed", due_at, OccurrenceStatus.SNOOZED, due_at=future_due_at))
             db.close()

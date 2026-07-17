@@ -54,6 +54,8 @@ class ReminderService:
         target: dict[str, Any],
         schedule: dict[str, Any],
         timezone: str,
+        title: str = "Reminder",
+        message: str = "Reminder is due.",
         default_snooze_minutes: int = 60,
         intervals_minutes: tuple[int, ...] = (),
         max_deliveries: int = 1,
@@ -71,6 +73,8 @@ class ReminderService:
         reminder = Reminder(
             id=reminder_id,
             target=json.dumps(target, sort_keys=True, separators=(",", ":")),
+            title=title,
+            message=message,
             schedule=stored_schedule,
             timezone=timezone,
             default_snooze_minutes=default_snooze_minutes,
@@ -347,9 +351,9 @@ class ReminderService:
             now,
             DeliveryStatus.FAILURE,
             outcome.transport,
-            outcome.error,
-            False,
-            now,
+            error=outcome.error,
+            applied_to_occurrence=False,
+            created_at=now,
         )
         with self.db.transaction() as connection:
             applied = _set_occurrence_if_status(connection, occurrence.id, OccurrenceStatus.DUE, now, OccurrenceStatus.DELIVERING, claim_id=claim_id)
@@ -357,8 +361,8 @@ class ReminderService:
                 """
                 INSERT INTO delivery_attempts(
                     id, occurrence_id, logical_delivery_id, attempted_at, status,
-                    transport, error, applied_to_occurrence, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    transport, error, provider_message_id, applied_to_occurrence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attempt.id,
@@ -368,6 +372,7 @@ class ReminderService:
                     attempt.status.value,
                     attempt.transport,
                     attempt.error,
+                    None,
                     int(applied),
                     datetime_to_iso(attempt.created_at),
                 ),
@@ -399,13 +404,23 @@ class ReminderService:
                 ),
             )
             applied = cursor.rowcount == 1
-            attempt = DeliveryAttempt(attempt_id, occurrence.id, logical_delivery_id, now, DeliveryStatus.SUCCESS, outcome.transport, applied_to_occurrence=applied, created_at=now)
+            attempt = DeliveryAttempt(
+                attempt_id,
+                occurrence.id,
+                logical_delivery_id,
+                now,
+                DeliveryStatus.SUCCESS,
+                outcome.transport,
+                provider_message_id=outcome.provider_message_id,
+                applied_to_occurrence=applied,
+                created_at=now,
+            )
             connection.execute(
                 """
                 INSERT INTO delivery_attempts(
                     id, occurrence_id, logical_delivery_id, attempted_at, status,
-                    transport, error, applied_to_occurrence, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    transport, error, provider_message_id, applied_to_occurrence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attempt.id,
@@ -415,6 +430,7 @@ class ReminderService:
                     attempt.status.value,
                     attempt.transport,
                     None,
+                    attempt.provider_message_id,
                     int(attempt.applied_to_occurrence),
                     datetime_to_iso(attempt.created_at),
                 ),
@@ -515,7 +531,14 @@ def _meta(schedule: dict[str, Any]) -> dict[str, Any]:
 
 
 def _message_for(reminder: Reminder, occurrence: Occurrence) -> str:
-    return f"Reminder {reminder.id} due at {datetime_to_iso(occurrence.scheduled_for)}. Reply DONE, SNOOZE, or CANCEL."
+    return "\n".join(
+        (
+            reminder.title.strip(),
+            reminder.message.strip(),
+            f"Due: {datetime_to_iso(occurrence.scheduled_for)}",
+            "Reply DONE, SNOOZE <duration>, or CANCEL.",
+        )
+    )
 
 
 def _occurrence_id(reminder_id: str, scheduled_for: datetime) -> str:

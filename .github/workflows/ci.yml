@@ -45,3 +45,8 @@ jobs:
           "$venv/bin/pip" install --no-index --no-deps "$wheel" >/dev/null
           smoke=$(mktemp -d)
           REPLYLOOP_DB="$smoke/replyloop.db" "$venv/bin/replyloop" --json doctor >/dev/null
+      - name: Source cleanliness after build
+        run: |
+          rm -rf build dist *.egg-info
+          git diff --exit-code
+          test -z "$(git status --porcelain --ignored --untracked-files=all)"

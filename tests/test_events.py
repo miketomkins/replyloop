@@ -17,6 +17,8 @@ def reminder() -> Reminder:
     return Reminder(
         id="reminder-events",
         target="synthetic-direct-target",
+        title="Events reminder",
+        message="Events reminder body.",
         schedule={"kind": "daily", "times": ["09:00"]},
         timezone="UTC",
         created_at=now,
@@ -56,6 +58,7 @@ class EventStoreTests(unittest.TestCase):
                 attempted_at=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
                 status=DeliveryStatus.SUCCESS,
                 transport="synthetic-transport",
+                provider_message_id="provider-one",
                 applied_to_occurrence=True,
             )
             event = db.add_delivery_attempt(attempt)

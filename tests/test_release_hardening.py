@@ -233,11 +233,15 @@ class ReleaseHardeningTests(unittest.TestCase):
             "scripts/verify_wheel.py",
             "venv",
             "replyloop\" --json doctor",
+            "Source cleanliness after build",
+            "git diff --exit-code",
+            "git status --porcelain --ignored --untracked-files=all",
         ):
             self.assertIn(required, workflow)
         self.assertLess(workflow.index("Unit tests"), workflow.index("Provision packaging tools"))
         self.assertLess(workflow.index("Build wheel"), workflow.index("Verify wheel"))
         self.assertLess(workflow.index("Verify wheel"), workflow.index("Clean wheel install"))
+        self.assertLess(workflow.index("Clean wheel install"), workflow.index("Source cleanliness after build"))
 
     def test_no_skipped_tests_or_committed_build_outputs(self) -> None:
         tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True).stdout.splitlines()
@@ -275,6 +279,7 @@ class ReleaseHardeningTests(unittest.TestCase):
             "replyloop/migrations/001_initial.sql": b"-- migration\n",
             "replyloop/migrations/002_delivery_claim_ids.sql": b"-- migration\n",
             "replyloop/migrations/003_logical_delivery_identity.sql": b"-- migration\n",
+            "replyloop/migrations/004_reminder_content_and_receipts.sql": b"-- migration\n",
             "replyloop-0.1.0.dist-info/METADATA": metadata.encode("utf-8"),
             "replyloop-0.1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
             "replyloop-0.1.0.dist-info/entry_points.txt": b"[console_scripts]\nreplyloop = replyloop.cli:main\n\n[hermes_agent.plugins]\nreplyloop = replyloop.hermes_plugin\n",

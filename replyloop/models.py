@@ -37,6 +37,8 @@ class DeliveryStatus(StrEnum):
 class Reminder:
     id: str
     target: str
+    title: str
+    message: str
     schedule: dict[str, Any]
     timezone: str
     status: ReminderStatus = ReminderStatus.ACTIVE
@@ -50,6 +52,10 @@ class Reminder:
             raise ValidationError("reminder id is required")
         if not self.target:
             raise ValidationError("target is required")
+        if not isinstance(self.title, str) or not self.title.strip():
+            raise ValidationError("title is required")
+        if not isinstance(self.message, str) or not self.message.strip():
+            raise ValidationError("message is required")
         if not isinstance(self.schedule, dict):
             raise ValidationError("schedule must be a mapping")
         if not isinstance(self.timezone, str) or not self.timezone:
@@ -93,6 +99,7 @@ class DeliveryAttempt:
     status: DeliveryStatus
     transport: str
     error: str | None = None
+    provider_message_id: str | None = None
     applied_to_occurrence: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -105,6 +112,13 @@ class DeliveryAttempt:
             raise ValidationError("logical delivery id is required")
         if not self.transport:
             raise ValidationError("transport is required")
+        if self.status == DeliveryStatus.SUCCESS:
+            if not isinstance(self.provider_message_id, str) or not self.provider_message_id:
+                raise ValidationError("provider_message_id is required for successful delivery attempts")
+            if self.error is not None:
+                raise ValidationError("successful delivery attempts cannot include error")
+        elif self.provider_message_id is not None:
+            raise ValidationError("failed delivery attempts cannot include provider_message_id")
         _require_aware_utc(self.attempted_at, "attempted_at")
 
 

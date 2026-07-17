@@ -18,6 +18,8 @@ CREATE_SCHEMA = {
         "properties": {
             **_COMMON_PROPERTIES,
             "id": {"type": "string"},
+            "title": {"type": "string", "description": "User-visible reminder title."},
+            "message": {"type": "string", "description": "User-visible reminder message."},
             "schedule": {"type": "object"},
             "once_at": {"type": "string"},
             "daily": {"type": "boolean"},
@@ -35,7 +37,7 @@ CREATE_SCHEMA = {
             "max_deliveries": {"type": "integer"},
             "repeat_last": {"type": "boolean"},
         },
-        "required": [],
+        "required": ["title", "message"],
     },
 }
 

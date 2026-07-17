@@ -17,6 +17,7 @@ EXPECTED_MIGRATIONS = {
     "replyloop/migrations/001_initial.sql",
     "replyloop/migrations/002_delivery_claim_ids.sql",
     "replyloop/migrations/003_logical_delivery_identity.sql",
+    "replyloop/migrations/004_reminder_content_and_receipts.sql",
 }
 FORBIDDEN_PREFIXES = ("tests/", "build/", "dist/")
 FORBIDDEN_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}

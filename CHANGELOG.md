@@ -7,6 +7,7 @@ Initial public hardening release.
 ### Added
 - Local-first SQLite reminder engine with migrations, event history, delivery attempts, backup, and doctor diagnostics.
 - `replyloop` CLI for create, list, show, pause, resume, cancel, tick, reply, backup, and doctor workflows.
+- Reminder creation stores user-supplied title and message content, and delivery attempts retain successful provider receipt IDs.
 - Once, daily, and weekly schedules with IANA timezones, multiple local times, deterministic DST handling, and per-reminder snooze and escalation policy.
 - Exact `DONE`, `SNOOZE`, `SNOOZE <duration>`, and `CANCEL` reply semantics for direct-message targets.
 - Optional Hermes plugin entry point with scheduler tools, gateway reply hook, Photon delivery adapter, and privacy-preserving skip logging.

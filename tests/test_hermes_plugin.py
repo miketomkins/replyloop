@@ -106,6 +106,8 @@ class HermesPluginRegistrationTests(unittest.TestCase):
             ReminderService(setup_db, RecordingAdapter(), clock).create_reminder(
                 reminder_id="r1",
                 target={"platform": "photon", "chat_id": "c-a", "sender_id": "s-a", "is_dm": True},
+                title="Hermes custom title",
+                message="Hermes custom body",
                 schedule={"kind": "daily", "times": ["09:00"]},
                 timezone="UTC",
             )
@@ -125,7 +127,7 @@ class HermesPluginRegistrationTests(unittest.TestCase):
             ctx.dispatch_result = {"success": True, "message_id": "photon-msg-1"}
             db = connect(db_path)
             second = ReminderService(db, HermesDeliveryAdapter(ctx), clock).tick()
-            attempts = db.connection.execute("SELECT status, error FROM delivery_attempts ORDER BY created_at, id").fetchall()
+            attempts = db.connection.execute("SELECT status, error, provider_message_id FROM delivery_attempts ORDER BY created_at, id").fetchall()
             success_events = [
                 json.loads(row["payload_json"])
                 for row in db.connection.execute("SELECT payload_json FROM events WHERE event_type = ? ORDER BY id", ("delivery.succeeded",)).fetchall()
@@ -133,7 +135,11 @@ class HermesPluginRegistrationTests(unittest.TestCase):
             db.close()
         self.assertEqual((second.attempted, second.delivered), (1, 1))
         self.assertEqual(len(ctx.sends), 2)
+        self.assertIn("Hermes custom title", ctx.sends[-1]["args"]["message"])
+        self.assertIn("Hermes custom body", ctx.sends[-1]["args"]["message"])
+        self.assertIn("SNOOZE <duration>", ctx.sends[-1]["args"]["message"])
         self.assertEqual([row["status"] for row in attempts], ["failure", "success"])
+        self.assertEqual([row["provider_message_id"] for row in attempts], [None, "photon-msg-1"])
         self.assertEqual(success_events[-1]["provider_message_id"], "photon-msg-1")
         self.assertNotIn(phone, attempts[0]["error"])
         self.assertNotIn("c-a", attempts[0]["error"])
@@ -191,6 +197,8 @@ class HermesPluginRegistrationTests(unittest.TestCase):
                     {
                         "db": str(Path(tmp) / "state.sqlite"),
                         "id": "r1",
+                        "title": "Plugin title",
+                        "message": "Plugin body",
                         "schedule": {"kind": "daily", "times": ["09:00"]},
                         "target": {"platform": "photon", "chat_id": "c-a", "is_dm": True},
                         "timezone": "UTC",
@@ -213,6 +221,8 @@ class HermesPluginRegistrationTests(unittest.TestCase):
                         {
                             "db": str(Path(tmp) / "state.sqlite"),
                             "id": "r1",
+                            "title": "Plugin title",
+                            "message": "Plugin body",
                             "schedule": {"kind": "daily", "times": ["09:00"]},
                             "target": target,
                             "timezone": "UTC",
