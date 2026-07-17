@@ -20,7 +20,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_recording_adapter_returns_queued_outcomes_then_successes(self) -> None:
         adapter = RecordingAdapter([DeliveryOutcome.failure("synthetic", "offline")])
-        request = DeliveryRequest("o1", "r1", {"platform": "telegram", "chat_id": "c1", "is_dm": True}, "body")
+        request = DeliveryRequest("o1", "r1", "replyloop:o1:delivery:1", {"platform": "telegram", "chat_id": "c1", "is_dm": True}, "body")
         self.assertEqual(adapter.deliver(request).status, OutcomeStatus.FAILURE)
         self.assertEqual(adapter.deliver(request).provider_message_id, "msg-1")
         self.assertEqual(adapter.requests, [request, request])

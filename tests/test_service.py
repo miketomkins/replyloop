@@ -51,6 +51,20 @@ class BlockingSuccessAdapter:
         return DeliveryOutcome.success(self.transport, "msg-late")
 
 
+class AdvancingSuccessAdapter:
+    transport = "synthetic"
+
+    def __init__(self, clock: FakeClock, delivered_at: datetime) -> None:
+        self.clock = clock
+        self.delivered_at = delivered_at
+        self.requests: list[DeliveryRequest] = []
+
+    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
+        self.requests.append(request)
+        self.clock.set(self.delivered_at)
+        return DeliveryOutcome.success(self.transport, f"msg-{len(self.requests)}")
+
+
 def make_service(tmp: str, *, outcomes: list[DeliveryOutcome] | None = None, now: datetime | None = None):
     db = connect(Path(tmp) / "state.sqlite")
     clock = FakeClock(now or datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
@@ -175,6 +189,27 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(len(adapter.requests), 2)
         self.assertEqual([row["status"] for row in attempts], ["success", "success"])
         self.assertIn("occurrence.escalated", events)
+
+    def test_slow_successful_delivery_uses_completion_time_for_escalation_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "state.sqlite")
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            adapter = AdvancingSuccessAdapter(clock, datetime(2026, 1, 1, 9, 12, tzinfo=UTC))
+            service = ReminderService(db, adapter, clock)
+            create_daily(service, max_deliveries=2)
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            first = service.tick()
+            clock.set(datetime(2026, 1, 1, 9, 21, tzinfo=UTC))
+            too_soon = service.tick()
+            clock.set(datetime(2026, 1, 1, 9, 22, tzinfo=UTC))
+            due = service.tick()
+            attempts = db.connection.execute("SELECT attempted_at, created_at FROM delivery_attempts ORDER BY attempted_at").fetchall()
+            db.close()
+        self.assertEqual((first.attempted, first.delivered), (1, 1))
+        self.assertEqual(too_soon.attempted, 0)
+        self.assertEqual((due.attempted, due.delivered), (1, 1))
+        self.assertEqual(attempts[0]["attempted_at"], "2026-01-01T09:12:00.000000Z")
+        self.assertEqual(attempts[0]["created_at"], "2026-01-01T09:12:00.000000Z")
 
     def test_done_snooze_and_cancel_mutate_only_matching_delivered_occurrence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

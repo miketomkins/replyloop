@@ -34,6 +34,29 @@ class BlockingSuccessAdapter:
         return DeliveryOutcome.success(self.transport, self.provider_message_id)
 
 
+class SharedIdempotentBlockingAdapter:
+    transport = "synthetic"
+
+    def __init__(self, provider_message_id: str, seen_keys: dict[str, str], *, block: bool = False) -> None:
+        self.provider_message_id = provider_message_id
+        self.seen_keys = seen_keys
+        self.block = block
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.requests: list[DeliveryRequest] = []
+        self.external_requests: list[DeliveryRequest] = []
+
+    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
+        self.requests.append(request)
+        self.started.set()
+        if self.block:
+            self.release.wait(timeout=5)
+        if request.idempotency_key not in self.seen_keys:
+            self.seen_keys[request.idempotency_key] = self.provider_message_id
+            self.external_requests.append(request)
+        return DeliveryOutcome.success(self.transport, self.seen_keys[request.idempotency_key])
+
+
 class OfflineRetryTests(unittest.TestCase):
     def test_transport_retry_is_separate_from_escalation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,6 +220,61 @@ class OfflineRetryTests(unittest.TestCase):
         self.assertEqual(len(recovery_adapter.requests), 1)
         self.assertEqual([row["status"] for row in attempts], ["success", "success"])
         self.assertEqual([event["applied"] for event in success_events], [True, False])
+
+    def test_expired_claim_reuses_stable_idempotency_key_for_provider_dedupe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            db = connect(path)
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            setup = ReminderService(db, RecordingAdapter(), clock)
+            setup.create_reminder(
+                reminder_id="reminder-1",
+                target=TARGET,
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+            )
+            db.close()
+
+            seen: dict[str, str] = {}
+            original_adapter = SharedIdempotentBlockingAdapter("msg-original", seen, block=True)
+            exceptions: list[BaseException] = []
+
+            def run_original() -> None:
+                worker_db = None
+                try:
+                    worker_db = connect(path)
+                    clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+                    ReminderService(worker_db, original_adapter, clock).tick()
+                except BaseException as exc:
+                    exceptions.append(exc)
+                finally:
+                    if worker_db is not None:
+                        worker_db.close()
+
+            thread = threading.Thread(target=run_original)
+            thread.start()
+            self.assertTrue(original_adapter.started.wait(timeout=5))
+
+            recovery_db = connect(path)
+            recovery_adapter = SharedIdempotentBlockingAdapter("msg-replacement", seen)
+            clock.set(datetime(2026, 1, 1, 10, 0, 1, tzinfo=UTC))
+            recovery = ReminderService(recovery_db, recovery_adapter, clock).tick()
+            recovery_db.close()
+
+            original_adapter.release.set()
+            thread.join(timeout=5)
+
+            all_requests = original_adapter.requests + recovery_adapter.requests
+            external_requests = original_adapter.external_requests + recovery_adapter.external_requests
+            check = connect(path)
+            attempts = check.connection.execute("SELECT status FROM delivery_attempts ORDER BY attempted_at, id").fetchall()
+            check.close()
+        self.assertEqual(exceptions, [])
+        self.assertEqual((recovery.attempted, recovery.delivered), (1, 1))
+        self.assertEqual(len(all_requests), 2)
+        self.assertEqual({request.idempotency_key for request in all_requests}, {all_requests[0].idempotency_key})
+        self.assertEqual(len(external_requests), 1)
+        self.assertEqual([row["status"] for row in attempts], ["success", "success"])
 
 
 if __name__ == "__main__":

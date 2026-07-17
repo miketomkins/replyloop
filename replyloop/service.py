@@ -95,22 +95,30 @@ class ReminderService:
             claim_id = self._claim_occurrence(occurrence.id, now)
             if claim_id is None:
                 continue
+            idempotency_key = self._delivery_idempotency_key(occurrence.id)
             attempted += 1
             try:
                 outcome = self.adapter.deliver(
-                    DeliveryRequest(occurrence.id, reminder.id, _decode_target(reminder.target), _message_for(reminder, occurrence))
+                    DeliveryRequest(
+                        occurrence.id,
+                        reminder.id,
+                        idempotency_key,
+                        _decode_target(reminder.target),
+                        _message_for(reminder, occurrence),
+                    )
                 )
             except Exception as exc:
                 outcome = DeliveryOutcome.failure(getattr(self.adapter, "transport", "unknown"), str(exc) or exc.__class__.__name__)
+            outcome_at = self.clock.now()
             try:
                 if outcome.status == OutcomeStatus.SUCCESS:
-                    if self._record_success(reminder, occurrence, outcome, now, claim_id):
+                    if self._record_success(reminder, occurrence, outcome, outcome_at, claim_id):
                         delivered += 1
                 else:
-                    if self._record_failure(occurrence, outcome, now, claim_id):
+                    if self._record_failure(occurrence, outcome, outcome_at, claim_id):
                         failed += 1
             except Exception:
-                self._restore_claim(occurrence.id, now, claim_id)
+                self._restore_claim(occurrence.id, outcome_at, claim_id)
                 raise
         return TickResult(created, attempted, delivered, failed)
 
@@ -291,8 +299,13 @@ class ReminderService:
             _insert_event(connection, Event(None, "occurrence", occurrence_id, "delivery.claimed", {"claim_id": claim_id}, now))
         return claim_id
 
+    def _delivery_idempotency_key(self, occurrence_id: str) -> str:
+        row = self.db.connection.execute("SELECT COUNT(*) FROM delivery_attempts WHERE occurrence_id = ?", (occurrence_id,)).fetchone()
+        attempt_number = int(row[0]) + 1
+        return f"replyloop:{occurrence_id}:delivery:{attempt_number}"
+
     def _record_failure(self, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime, claim_id: str) -> bool:
-        attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "failure", claim_id), occurrence.id, now, DeliveryStatus.FAILURE, outcome.transport, outcome.error)
+        attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "failure", claim_id), occurrence.id, now, DeliveryStatus.FAILURE, outcome.transport, outcome.error, now)
         with self.db.transaction() as connection:
             applied = _set_occurrence_if_status(connection, occurrence.id, OccurrenceStatus.DUE, now, OccurrenceStatus.DELIVERING, claim_id=claim_id)
             connection.execute(
@@ -303,7 +316,7 @@ class ReminderService:
         return applied
 
     def _record_success(self, reminder: Reminder, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime, claim_id: str) -> bool:
-        attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "success", claim_id), occurrence.id, now, DeliveryStatus.SUCCESS, outcome.transport)
+        attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "success", claim_id), occurrence.id, now, DeliveryStatus.SUCCESS, outcome.transport, created_at=now)
         with self.db.transaction() as connection:
             cursor = connection.execute(
                 """

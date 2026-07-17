@@ -16,6 +16,7 @@ class OutcomeStatus(StrEnum):
 class DeliveryRequest:
     occurrence_id: str
     reminder_id: str
+    idempotency_key: str
     target: dict[str, str | bool | None]
     text: str
 
