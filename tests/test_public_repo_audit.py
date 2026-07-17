@@ -384,6 +384,22 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("forbidden local artifact", result.stderr)
             self.assertNotIn(candidate, result.stderr)
 
+    def test_dotted_credential_filename_without_safe_extension_is_fully_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = "candidate" + "." + "signaturePart123456"
+            parent = root / "config"
+            parent.mkdir()
+            (parent / ("secret" + candidate)).write_text("safe\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("config/" + "secret" + "[REDACTED]: path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
+            self.assertNotIn(candidate, result.stderr)
+            self.assertNotIn("signaturePart123456", result.stderr)
+
     def test_raw_common_cloud_package_and_ai_tokens_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

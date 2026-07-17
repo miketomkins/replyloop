@@ -105,6 +105,8 @@ PATH_REDACTIONS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)(?:[=:._-])[^/]+"),
 )
 
+SAFE_REDACTION_SUFFIXES = {".cfg", ".csv", ".ini", ".json", ".md", ".py", ".txt", ".yaml", ".yml"}
+
 SENSITIVE_NAME_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)")
 
 IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
@@ -138,7 +140,7 @@ def redact_path_segment(segment: str) -> str:
         return segment
     suffix = ""
     dot = segment.rfind(".")
-    if dot > marker.end():
+    if dot > marker.end() and segment[dot:].lower() in SAFE_REDACTION_SUFFIXES:
         suffix = segment[dot:]
     return segment[: marker.end()] + "[REDACTED]" + suffix
 
