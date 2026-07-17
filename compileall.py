@@ -40,7 +40,8 @@ def main() -> int:
     except SystemExit as exc:
         exit_code = _system_exit_code(exc)
     finally:
-        for root in roots:
+        cleanup_roots = [Path.cwd(), *roots]
+        for root in cleanup_roots:
             _remove_bytecode_caches(root)
     return exit_code
 

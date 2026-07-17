@@ -113,8 +113,8 @@ class DeliveryAttempt:
         if not self.transport:
             raise ValidationError("transport is required")
         if self.status == DeliveryStatus.SUCCESS:
-            if not isinstance(self.provider_message_id, str) or not self.provider_message_id:
-                raise ValidationError("provider_message_id is required for successful delivery attempts")
+            if self.provider_message_id is not None and (not isinstance(self.provider_message_id, str) or not self.provider_message_id):
+                raise ValidationError("provider_message_id must be non-empty when provided")
             if self.error is not None:
                 raise ValidationError("successful delivery attempts cannot include error")
         elif self.provider_message_id is not None:

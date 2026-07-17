@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -249,6 +250,7 @@ class ReleaseHardeningTests(unittest.TestCase):
             package = root / "sample"
             package.mkdir()
             (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+            shutil.rmtree(ROOT / "__pycache__", ignore_errors=True)
 
             result = subprocess.run(
                 [sys.executable, "-m", "compileall", "-q", str(package)],
@@ -261,6 +263,7 @@ class ReleaseHardeningTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(list(root.rglob("__pycache__")))
+            self.assertFalse((ROOT / "__pycache__").exists())
 
     def test_no_skipped_tests_or_committed_build_outputs(self) -> None:
         tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True).stdout.splitlines()
