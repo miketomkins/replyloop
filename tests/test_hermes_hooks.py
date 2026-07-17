@@ -15,7 +15,7 @@ from replyloop.clock import FakeClock
 from replyloop.db import connect
 from replyloop.delivery import RecordingAdapter
 from replyloop.hermes_plugin.hooks import pre_gateway_dispatch
-from replyloop.hermes_plugin.privacy import ReplyLoopSkipLogFilter, render_gateway_skip_log
+from replyloop.hermes_plugin.privacy import _SKIP_LOG_MESSAGE, install_gateway_privacy_guard
 from replyloop.models import OccurrenceStatus
 from replyloop.service import ReminderService
 
@@ -273,15 +273,31 @@ class HermesHookTests(unittest.TestCase):
             return result, event.source.chat_id
 
         logger = logging.getLogger("gateway.run")
-        log_filter = ReplyLoopSkipLogFilter()
-        logger.addFilter(log_filter)
+        old_level = logger.level
+        old_propagate = logger.propagate
+        stream = tempfile.SpooledTemporaryFile(mode="w+")
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        old_filters = list(logger.filters)
+        logger.filters.clear()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
         try:
             result, shared_chat = asyncio.run(run_case())
             self.assertIsNotNone(result)
-            rendered = render_gateway_skip_log(reason=result["reason"], platform="photon", chat=shared_chat)
-            unrelated = render_gateway_skip_log(reason="other-plugin-handled", platform="photon", chat=shared_chat)
+            self.assertTrue(install_gateway_privacy_guard(logger))
+            logger.info(_SKIP_LOG_MESSAGE, result["reason"], "photon", shared_chat)
+            logger.info(_SKIP_LOG_MESSAGE, "other-plugin-handled", "photon", shared_chat)
+            handler.flush()
+            stream.seek(0)
+            rendered, unrelated = stream.read().splitlines()
         finally:
-            logger.removeFilter(log_filter)
+            logger.removeHandler(handler)
+            logger.filters[:] = old_filters
+            logger.setLevel(old_level)
+            logger.propagate = old_propagate
+            stream.close()
 
         self.assertEqual(shared_chat, "rawx")
         self.assertIn("reason=replyloop-command-handled", rendered)
@@ -292,6 +308,23 @@ class HermesHookTests(unittest.TestCase):
     def test_legacy_unbound_photon_target_is_not_consumed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = self._seed_legacy_unbound_delivered(Path(tmp) / "state.sqlite")
+            old = os.environ.get("REPLYLOOP_DB")
+            os.environ["REPLYLOOP_DB"] = str(db_path)
+            try:
+                result = pre_gateway_dispatch(
+                    event=self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
+                    gateway=SimpleNamespace(adapters={"photon": FakeAdapter()}),
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("REPLYLOOP_DB", None)
+                else:
+                    os.environ["REPLYLOOP_DB"] = old
+        self.assertIsNone(result)
+
+    def test_malformed_photon_sender_target_is_not_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._seed_malformed_sender_delivered(Path(tmp) / "state.sqlite")
             old = os.environ.get("REPLYLOOP_DB")
             os.environ["REPLYLOOP_DB"] = str(db_path)
             try:
@@ -327,6 +360,17 @@ class HermesHookTests(unittest.TestCase):
         db.connection.execute(
             "UPDATE reminders SET target = ? WHERE id = ?",
             (json.dumps({"platform": "photon", "chat_id": "c-a", "is_dm": True}, sort_keys=True), "r1"),
+        )
+        db.connection.commit()
+        db.close()
+        return db_path
+
+    def _seed_malformed_sender_delivered(self, db_path: Path) -> Path:
+        db_path = self._seed_delivered(db_path)
+        db = connect(db_path)
+        db.connection.execute(
+            "UPDATE reminders SET target = ? WHERE id = ?",
+            (json.dumps({"platform": "Photon", "chat_id": "c-a", "sender_id": " ", "is_dm": True}, sort_keys=True), "r1"),
         )
         db.connection.commit()
         db.close()

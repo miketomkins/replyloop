@@ -28,12 +28,17 @@ class ReplyParserTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 parse_duration_minutes(bad)
 
-    def test_target_match_is_exact_and_sender_optional(self) -> None:
+    def test_target_matches_sender_and_chat_type(self) -> None:
         target = {"platform": "telegram", "chat_id": "c1", "sender_id": "u1", "is_dm": True}
         self.assertTrue(target_matches(target, ReplyIdentity("telegram", "c1", "u1", True)))
         self.assertFalse(target_matches(target, ReplyIdentity("telegram", "c1", "u2", True)))
         self.assertFalse(target_matches(target, ReplyIdentity("telegram", "c1", "u1", False)))
         self.assertTrue(target_matches({"platform": "telegram", "chat_id": "c1"}, ReplyIdentity("telegram", "c1", None, True)))
+
+    def test_photon_dm_target_requires_meaningful_sender_binding(self) -> None:
+        identity = ReplyIdentity("photon", "c-a", "s-a", True)
+        self.assertFalse(target_matches({"platform": "photon", "chat_id": "c-a", "is_dm": True}, identity))
+        self.assertFalse(target_matches({"platform": "Photon", "chat_id": "c-a", "sender_id": " ", "is_dm": True}, identity))
 
 
 if __name__ == "__main__":

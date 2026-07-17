@@ -68,7 +68,8 @@ def duration_delta(minutes: int) -> timedelta:
 
 
 def target_matches(target: dict[str, object], identity: ReplyIdentity) -> bool:
-    if target.get("platform") != identity.platform:
+    target_platform = target.get("platform")
+    if not isinstance(target_platform, str) or target_platform.strip().lower() != identity.platform:
         return False
     if str(target.get("chat_id")) != identity.chat_id:
         return False
@@ -77,7 +78,7 @@ def target_matches(target: dict[str, object], identity: ReplyIdentity) -> bool:
         return False
     target_sender = target.get("sender_id")
     if identity.platform == "photon" and identity.is_dm:
-        if not isinstance(target_sender, str) or not target_sender:
+        if not isinstance(target_sender, str) or not target_sender.strip():
             return False
     if target_sender is not None and str(target_sender) != (identity.sender_id or ""):
         return False

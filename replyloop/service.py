@@ -452,12 +452,14 @@ def _validate_target(target: dict[str, Any]) -> None:
     if not isinstance(target, dict):
         raise ValidationError("target must be a mapping")
     for key in ("platform", "chat_id"):
-        if not isinstance(target.get(key), str) or not target[key]:
+        if not isinstance(target.get(key), str) or not target[key].strip():
             raise ValidationError(f"target {key} is required")
     if "sender_id" in target and target["sender_id"] is not None and not isinstance(target["sender_id"], str):
         raise ValidationError("target sender_id must be a string")
-    if target.get("platform") == "photon" and target.get("is_dm", True) is True:
-        if not isinstance(target.get("sender_id"), str) or not target["sender_id"]:
+    platform = target["platform"].strip().lower()
+    if platform == "photon" and target.get("is_dm", True) is True:
+        binding = target.get("sender_id")
+        if not isinstance(binding, str) or not binding.strip():
             raise ValidationError("target sender_id is required for Photon DM targets")
     if "is_dm" in target and not isinstance(target["is_dm"], bool):
         raise ValidationError("target is_dm must be a boolean")
