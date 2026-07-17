@@ -468,6 +468,49 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("age private key marker", result.stderr)
             self.assertNotIn(key, result.stderr)
 
+    def test_git_history_content_is_reported_without_secret_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            token_name = "api" + "_" + "key"
+            token_value = "H" * 24
+            path = root / "history.txt"
+            path.write_text(f"{token_name}={token_value}\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "history.txt").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add unsafe history").returncode, 0)
+            path.write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "history.txt").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "clean head").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-history/", result.stderr)
+            self.assertIn("history.txt:1", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertNotIn(token_value, result.stderr)
+
+    def test_git_history_artifact_path_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            (root / "state.sqlite").write_bytes(b"sqlite bytes")
+            self.assertEqual(git(root, "add", "state.sqlite").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add local state").returncode, 0)
+            (root / "state.sqlite").unlink()
+            self.assertEqual(git(root, "add", "state.sqlite").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "remove local state").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("state.sqlite: path", result.stderr)
+            self.assertIn("git history", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

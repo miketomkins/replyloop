@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Public repository audit
+        run: python3 scripts/public_repo_audit.py .
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Compile package
+        run: python3 -m compileall -q replyloop
+      - name: Build wheel and source distribution
+        run: |
+          python3 -m pip install --upgrade build
+          python3 -m build --wheel --sdist --outdir dist
+      - name: Clean wheel install and doctor smoke test
+        run: |
+          out=$(mktemp -d)
+          python3 -m pip wheel --no-deps --no-build-isolation . -w "$out"
+          wheel=$(python3 -c "from pathlib import Path; import sys; print(next(Path(sys.argv[1]).glob('replyloop-*.whl'), ''))" "$out")
+          python3 -c "import os,sys; p=sys.argv[1]; print('wheel verified: '+os.path.basename(p) if p and os.path.getsize(p)>0 else 'wheel missing'); raise SystemExit(0 if p and os.path.getsize(p)>0 else 1)" "$wheel"
+          venv=$(mktemp -d)
+          python3 -m venv "$venv"
+          "$venv/bin/pip" install --no-index --no-deps "$wheel" >/dev/null
+          smoke=$(mktemp -d)
+          REPLYLOOP_DB="$smoke/replyloop.db" "$venv/bin/replyloop" --json doctor >/dev/null

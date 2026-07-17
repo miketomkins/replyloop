@@ -1,35 +1,31 @@
 # Hermes integration
 
-ReplyLoop can be loaded as an optional Hermes plugin. The plugin keeps ReplyLoop local-first: the database stays in the ReplyLoop SQLite file, delivery is routed through Hermes' `send_message` transport, and gateway reply commands are handled only for exact direct-message matches.
+ReplyLoop can be loaded as an optional Hermes plugin. The plugin keeps ReplyLoop local-first: the database stays in the ReplyLoop SQLite file, delivery is routed through Hermes transport, and gateway reply commands are handled only for exact direct-message matches.
 
-## Install the package entry point
+## Package entry point
 
-From this repository:
-
-```bash
-python3 -m pip install -e .
-```
-
-The package exposes this entry point:
+The package exposes this optional plugin entry point:
 
 ```toml
 [project.entry-points."hermes_agent.plugins"]
 replyloop = "replyloop.hermes_plugin"
 ```
 
-## Enable the plugin explicitly
+Installing ReplyLoop does not enable live messaging. Hermes plugin activation, scheduler setup, and channel configuration are separate operator actions.
 
-Hermes plugins are opt-in. Enable `replyloop` in the Hermes profile that will run the gateway or scheduler:
+## Enable explicitly
+
+Hermes plugins are opt-in. Enable `replyloop` only in the Hermes profile that will run a reviewed test gateway or scheduler:
 
 ```bash
 hermes config set plugins.enabled '["replyloop"]'
 ```
 
-Do not enable this against live personal channels until you have run the tests and reviewed the target placeholders below.
+Do not enable this against live personal channels until placeholders, database path, scheduler cadence, and transport behavior have been reviewed in an operator-controlled test channel.
 
 ## Scheduler example
 
-Run the scheduler as a no-agent job so Reminder delivery is deterministic and does not involve an LLM:
+Run the scheduler as a no-agent job so reminder delivery is deterministic and does not involve an LLM:
 
 ```bash
 hermes cron create \
@@ -48,35 +44,24 @@ export REPLYLOOP_DB="/path/to/replyloop.db"
 hermes replyloop --json tick
 ```
 
-The `--script` value is relative to `~/.hermes/scripts/`; place the script there before creating the job. The command above is an example only and should not be run until the placeholders have been replaced in an operator-controlled environment.
-
-`hermes replyloop tick` uses the plugin bridge, which first tries `ctx.dispatch_tool('send_message', {'action':'send', 'target':'<platform>:<chat>', 'message':'...'})` and falls back to Hermes' direct `tools.send_message_tool.send_message_tool` helper when the current registry reports `Unknown tool: send_message`. If the transport result has missing or false `success`, ReplyLoop records a failure and keeps the occurrence pending for retry.
+The `--script` value is relative to the operator's Hermes scripts directory. The command above is an example only and should not be run until placeholders are replaced in an operator-controlled environment.
 
 ## Tools
 
-The plugin registers these JSON tools:
+The plugin registers JSON tools for create, list, get, pause, resume, cancel, tick, and doctor operations. Tool handlers return JSON strings, catch exceptions, and redact target-like identifiers from errors.
 
-- `replyloop_create`
-- `replyloop_list`
-- `replyloop_get`
-- `replyloop_pause`
-- `replyloop_resume`
-- `replyloop_cancel`
-- `replyloop_tick`
-- `replyloop_doctor`
+## Delivery bridge
 
-Tool handlers return JSON strings, catch exceptions, and redact target-like identifiers from errors.
+Hermes delivery builds a platform target from the stored ReplyLoop target and sends the reminder text through Hermes `send_message`. If the Hermes transport reports missing or false success, ReplyLoop records a failure and keeps the occurrence pending for retry.
 
-## Photon/iMessage reply handling
+## Photon reply handling
 
-The gateway hook runs before normal dispatch and only handles exact `DONE`, `SNOOZE`, or `CANCEL` text from exact Photon direct-message targets that match an open ReplyLoop occurrence. It rejects group traffic, other platforms, wrong senders, ambiguous matches, and unrelated text so those messages continue through the normal Hermes conversation path.
+The gateway hook runs before normal dispatch and only handles exact `DONE`, `SNOOZE`, or `CANCEL` text from exact Photon direct-message targets that match an open ReplyLoop occurrence. It rejects group traffic, other platforms, wrong senders, ambiguous matches, and unrelated text so those messages continue through normal Hermes conversation handling.
 
-After a durable DB transition, the hook schedules a short acknowledgement through the live Photon adapter and returns `action=skip`. Plugin registration installs a narrowly scoped logging filter on Hermes' gateway logger so ReplyLoop handled-skip records render a one-way chat label instead of a raw chat identifier. It does not mutate the shared gateway event object, so later plugins still receive the original routing identity. If the privacy guard is unavailable, the hook is not registered; if the database mutation fails or the acknowledgement cannot be scheduled, the hook returns allow or no result rather than silently swallowing normal conversation.
+After a durable database transition, the hook schedules a short acknowledgement through the live Photon adapter and returns `action=skip`. Plugin registration installs a narrowly scoped logging filter on Hermes gateway logs so ReplyLoop handled-skip records render a one-way chat label instead of a raw chat identifier. It does not mutate the shared gateway event object, so later plugins still receive the original routing identity.
+
+If the privacy guard is unavailable, the hook is not registered. If the database mutation fails or acknowledgement cannot be scheduled, the hook returns allow or no result rather than silently swallowing normal conversation.
 
 ## Security boundary
 
-ReplyLoop never stores raw target identifiers in public CLI output, tool output, docs, or diagnostics. Use placeholder values such as `<platform>`, `<chat-id>`, and `<sender-id>` in docs and scripts. The Hermes source checkout is read-only evidence for compatibility tests; installing, enabling, restarting services, or sending through live adapters is a separate operator action.
-
-## Live activation warning
-
-This integration can send messages when enabled with a live Hermes gateway and scheduler. Before live activation, verify the database path, target placeholders, plugin allow-list, Photon configuration, scheduler command, and Hermes gateway support for honoring redacted `pre_gateway_dispatch` result metadata in skip logging in a non-personal test channel.
+ReplyLoop never stores raw target identifiers in public CLI output, tool output, docs, or diagnostics. Use placeholder values such as `<platform>`, `<chat-id>`, and `<sender-id>` in docs and scripts. Installing, enabling, restarting services, or sending through live adapters is outside this public hardening task.

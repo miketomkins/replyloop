@@ -240,7 +240,10 @@ def scan_text(root: Path, path: Path) -> Iterable[Finding]:
         except OSError:
             return
         lines = text.splitlines()
+    yield from scan_lines(path, lines)
 
+
+def scan_lines(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
     for line_no, line in enumerate(lines, start=1):
         for rule, pattern in CHECKS:
             if pattern.search(line):
@@ -259,7 +262,36 @@ def audit(root: Path) -> list[Finding]:
         findings.extend(scan_path(root, path))
         if path.is_symlink() or looks_text(path):
             findings.extend(scan_text(root, path))
+    findings.extend(scan_git_history(root))
     return findings
+
+
+def scan_git_history(root: Path) -> list[Finding]:
+    probe = run_git(root, ["rev-parse", "--is-inside-work-tree"])
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return []
+    commits = run_git(root, ["rev-list", "--all"])
+    if commits.returncode != 0:
+        return []
+    findings: list[Finding] = []
+    for commit in [line.strip() for line in commits.stdout.splitlines() if line.strip()]:
+        tree = run_git(root, ["ls-tree", "-r", "--name-only", "-z", commit])
+        if tree.returncode != 0:
+            continue
+        for rel in [item for item in tree.stdout.split("\0") if item]:
+            history_path = root / ".git-history" / commit[:12] / rel
+            findings.extend(scan_history_path(root, history_path, rel))
+            if Path(rel).suffix not in TEXT_SUFFIXES and Path(rel).name not in {"LICENSE", "README", "SECURITY", "CONTRIBUTING"}:
+                continue
+            blob = run_git(root, ["show", f"{commit}:{rel}"])
+            if blob.returncode == 0 and "\0" not in blob.stdout:
+                findings.extend(scan_lines(history_path, blob.stdout.splitlines()))
+    return findings
+
+
+def scan_history_path(root: Path, history_path: Path, rel: str) -> Iterable[Finding]:
+    if ARTIFACT_PATH_RE.search(rel):
+        yield Finding(history_path, None, "forbidden local artifact or credential-like path in git history")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,56 @@
+# Product behavior
+
+ReplyLoop creates scheduled reminder occurrences, records delivery attempts, retries failed transports, escalates unanswered delivered reminders, and resolves exact user replies.
+
+## MVP capabilities
+
+- Create reminders with `once`, `daily`, or `weekly` schedules in an IANA timezone.
+- Allow daily and weekly schedules to include multiple unique local `HH:MM` times.
+- Store per-reminder escalation intervals, maximum delivery count, repeat-last policy, and default snooze duration.
+- Create due occurrences idempotently during scheduler ticks.
+- Treat delivery retry separately from user-visible escalation.
+- Mark an occurrence delivered only after a transport success.
+- Keep failed deliveries retryable without consuming escalation steps.
+- Resolve exact `DONE`, `SNOOZE`, `SNOOZE <duration>`, and `CANCEL` commands for the matching direct-message target.
+- Ignore wrong senders, wrong chats, group traffic, unrelated text, and ambiguous latest matches.
+- Preserve append-only event history and immutable delivery attempts.
+- Provide backup, doctor, and migration mechanisms for the local SQLite store.
+- Keep Hermes integration optional through platform-neutral adapters.
+
+## Reply commands
+
+Supported commands are case-insensitive and whitespace-normalized:
+
+- `DONE`
+- `SNOOZE`
+- `SNOOZE 30m`
+- `SNOOZE 2h`
+- `SNOOZE 1d`
+- `CANCEL`
+
+Bare commands resolve the most recently delivered unresolved occurrence for the exact direct-message target. If no matching occurrence exists, ReplyLoop does not mutate data or consume unrelated conversation.
+
+## Schedules
+
+```json
+{"kind":"once","at":"2026-07-20T09:00:00Z"}
+{"kind":"daily","times":["08:00","14:00","20:00"]}
+{"kind":"weekly","weekdays":[0,2,4],"times":["09:00"]}
+```
+
+Weekdays use Monday `0` through Sunday `6`. Invalid, duplicated, empty, ambiguous, or timezone-inconsistent schedule elements are rejected before storage where applicable.
+
+DST behavior is deterministic: nonexistent local wall times during spring-forward gaps are skipped; ambiguous local wall times during fall-back folds produce both UTC instants.
+
+## Non-goals for v0.1.0
+
+- Web dashboard
+- Native mobile application
+- Shared or multi-user tenancy
+- Group-chat command handling
+- Natural-language reply interpretation
+- Medical, legal, or safety-critical advice
+- Direct ownership of messaging credentials
+- Calendar synchronization
+- Arbitrary cron expression parsing
+- Deleting reminder or event history through message commands
