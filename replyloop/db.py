@@ -97,7 +97,7 @@ class ReplyLoopDB:
         )
 
     def add_reminder(self, reminder: Reminder, event_type: str = "reminder.created") -> Event:
-        validate_schedule(reminder.schedule, reminder.timezone)
+        validate_schedule({key: value for key, value in reminder.schedule.items() if key != "_replyloop"}, reminder.timezone)
 
         def mutation(connection: sqlite3.Connection) -> None:
             _insert_reminder(connection, reminder)
@@ -184,8 +184,8 @@ class ReplyLoopDB:
 
     def list_due_occurrences(self, before_utc: datetime) -> list[Occurrence]:
         rows = self.connection.execute(
-            "SELECT * FROM occurrences WHERE status = ? AND due_at < ? ORDER BY due_at, id",
-            (OccurrenceStatus.DUE.value, datetime_to_iso(before_utc)),
+            "SELECT * FROM occurrences WHERE status IN (?, ?) AND due_at < ? ORDER BY due_at, id",
+            (OccurrenceStatus.DUE.value, OccurrenceStatus.SNOOZED.value, datetime_to_iso(before_utc)),
         ).fetchall()
         return [_row_to_occurrence(row) for row in rows]
 
