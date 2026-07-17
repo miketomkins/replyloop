@@ -76,6 +76,9 @@ def target_matches(target: dict[str, object], identity: ReplyIdentity) -> bool:
     if target_is_dm != identity.is_dm:
         return False
     target_sender = target.get("sender_id")
+    if identity.platform == "photon" and identity.is_dm:
+        if not isinstance(target_sender, str) or not target_sender:
+            return False
     if target_sender is not None and str(target_sender) != (identity.sender_id or ""):
         return False
     return True

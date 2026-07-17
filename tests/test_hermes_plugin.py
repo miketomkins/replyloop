@@ -182,6 +182,24 @@ class HermesPluginRegistrationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("error", result)
 
+    def test_create_rejects_photon_dm_target_without_sender_id(self) -> None:
+        ctx = FakePluginContext()
+        register(ctx)
+        with tempfile.TemporaryDirectory() as tmp:
+            result = json.loads(
+                ctx.tools["replyloop_create"]["handler"](
+                    {
+                        "db": str(Path(tmp) / "state.sqlite"),
+                        "id": "r1",
+                        "schedule": {"kind": "daily", "times": ["09:00"]},
+                        "target": {"platform": "photon", "chat_id": "c-a", "is_dm": True},
+                        "timezone": "UTC",
+                    }
+                )
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("sender", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

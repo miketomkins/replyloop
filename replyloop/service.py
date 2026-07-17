@@ -435,7 +435,11 @@ class ReminderService:
         matches: list[tuple[str, str]] = []
         latest_updated_at: str | None = None
         for row in rows:
-            if target_matches(_decode_target(row["target"]), identity):
+            try:
+                target = _decode_target(row["target"])
+            except ValidationError:
+                continue
+            if target_matches(target, identity):
                 if latest_updated_at is None:
                     latest_updated_at = row["delivered_at"]
                 elif row["delivered_at"] != latest_updated_at:
@@ -452,6 +456,9 @@ def _validate_target(target: dict[str, Any]) -> None:
             raise ValidationError(f"target {key} is required")
     if "sender_id" in target and target["sender_id"] is not None and not isinstance(target["sender_id"], str):
         raise ValidationError("target sender_id must be a string")
+    if target.get("platform") == "photon" and target.get("is_dm", True) is True:
+        if not isinstance(target.get("sender_id"), str) or not target["sender_id"]:
+            raise ValidationError("target sender_id is required for Photon DM targets")
     if "is_dm" in target and not isinstance(target["is_dm"], bool):
         raise ValidationError("target is_dm must be a boolean")
 

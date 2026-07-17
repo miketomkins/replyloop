@@ -7,6 +7,7 @@ from typing import Any
 from . import schemas
 from .cli import register_cli
 from .hooks import pre_gateway_dispatch
+from .privacy import install_gateway_privacy_guard
 from .tools import cancel, create, doctor, get, list_reminders, make_handler, pause, resume, tick
 
 TOOL_HANDLERS = {
@@ -33,6 +34,8 @@ def register(ctx: Any) -> None:
             description=description,
         )
     register_cli(ctx)
+    if not install_gateway_privacy_guard():
+        return
     ctx.register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
 
 

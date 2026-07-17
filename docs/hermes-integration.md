@@ -34,9 +34,9 @@ Run the scheduler as a no-agent job so Reminder delivery is deterministic and do
 ```bash
 hermes cron create \
   --name replyloop-tick \
-  --schedule 'every 1m' \
+  'every 1m' \
   --no-agent \
-  --script '/path/to/replyloop-tick.sh'
+  --script 'replyloop-tick.sh'
 ```
 
 Example script content, using placeholders only:
@@ -47,6 +47,8 @@ set -euo pipefail
 export REPLYLOOP_DB="/path/to/replyloop.db"
 hermes replyloop --json tick
 ```
+
+The `--script` value is relative to `~/.hermes/scripts/`; place the script there before creating the job. The command above is an example only and should not be run until the placeholders have been replaced in an operator-controlled environment.
 
 `hermes replyloop tick` uses the plugin bridge, which first tries `ctx.dispatch_tool('send_message', {'action':'send', 'target':'<platform>:<chat>', 'message':'...'})` and falls back to Hermes' direct `tools.send_message_tool.send_message_tool` helper when the current registry reports `Unknown tool: send_message`. If the transport result has missing or false `success`, ReplyLoop records a failure and keeps the occurrence pending for retry.
 
@@ -69,7 +71,7 @@ Tool handlers return JSON strings, catch exceptions, and redact target-like iden
 
 The gateway hook runs before normal dispatch and only handles exact `DONE`, `SNOOZE`, or `CANCEL` text from exact Photon direct-message targets that match an open ReplyLoop occurrence. It rejects group traffic, other platforms, wrong senders, ambiguous matches, and unrelated text so those messages continue through the normal Hermes conversation path.
 
-After a durable DB transition, the hook schedules a short acknowledgement through the live Photon adapter and returns `action=skip` with a one-way `redacted_chat` label to prevent the handled command from entering the LLM path. It does not mutate the shared gateway event object, so later plugins still receive the original routing identity. If the database mutation fails or the acknowledgement cannot be scheduled, the hook returns allow or no result rather than silently swallowing normal conversation.
+After a durable DB transition, the hook schedules a short acknowledgement through the live Photon adapter and returns `action=skip`. Plugin registration installs a narrowly scoped logging filter on Hermes' gateway logger so ReplyLoop handled-skip records render a one-way chat label instead of a raw chat identifier. It does not mutate the shared gateway event object, so later plugins still receive the original routing identity. If the privacy guard is unavailable, the hook is not registered; if the database mutation fails or the acknowledgement cannot be scheduled, the hook returns allow or no result rather than silently swallowing normal conversation.
 
 ## Security boundary
 

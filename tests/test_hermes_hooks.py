@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import tempfile
 import unittest
@@ -13,6 +15,7 @@ from replyloop.clock import FakeClock
 from replyloop.db import connect
 from replyloop.delivery import RecordingAdapter
 from replyloop.hermes_plugin.hooks import pre_gateway_dispatch
+from replyloop.hermes_plugin.privacy import ReplyLoopSkipLogFilter, render_gateway_skip_log
 from replyloop.models import OccurrenceStatus
 from replyloop.service import ReminderService
 
@@ -247,18 +250,85 @@ class HermesHookTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(logged_chat, "c-a")
 
-    def _seed_delivered(self, db_path: Path) -> Path:
+    def test_handled_skip_log_redacts_chat_without_mutating_event_or_other_logs(self) -> None:
+        async def run_case():
+            with tempfile.TemporaryDirectory() as tmp:
+                r = "rawx"
+                db_path = self._seed_delivered(
+                    Path(tmp) / "state.sqlite",
+                    target={"platform": "photon", "chat_id": r, "sender_id": "s-a", "is_dm": True},
+                )
+                old = os.environ.get("REPLYLOOP_DB")
+                os.environ["REPLYLOOP_DB"] = str(db_path)
+                try:
+                    adapter = FakeAdapter()
+                    event = self._event("DONE", platform="photon", chat_type="dm", chat_id=r, user_id="s-a")
+                    result = pre_gateway_dispatch(event=event, gateway=SimpleNamespace(adapters={"photon": adapter}))
+                    await asyncio.sleep(0)
+                finally:
+                    if old is None:
+                        os.environ.pop("REPLYLOOP_DB", None)
+                    else:
+                        os.environ["REPLYLOOP_DB"] = old
+            return result, event.source.chat_id
+
+        logger = logging.getLogger("gateway.run")
+        log_filter = ReplyLoopSkipLogFilter()
+        logger.addFilter(log_filter)
+        try:
+            result, shared_chat = asyncio.run(run_case())
+            self.assertIsNotNone(result)
+            rendered = render_gateway_skip_log(reason=result["reason"], platform="photon", chat=shared_chat)
+            unrelated = render_gateway_skip_log(reason="other-plugin-handled", platform="photon", chat=shared_chat)
+        finally:
+            logger.removeFilter(log_filter)
+
+        self.assertEqual(shared_chat, "rawx")
+        self.assertIn("reason=replyloop-command-handled", rendered)
+        self.assertIn("chat=id:", rendered)
+        self.assertNotIn("rawx", rendered)
+        self.assertIn("chat=rawx", unrelated)
+
+    def test_legacy_unbound_photon_target_is_not_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._seed_legacy_unbound_delivered(Path(tmp) / "state.sqlite")
+            old = os.environ.get("REPLYLOOP_DB")
+            os.environ["REPLYLOOP_DB"] = str(db_path)
+            try:
+                result = pre_gateway_dispatch(
+                    event=self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
+                    gateway=SimpleNamespace(adapters={"photon": FakeAdapter()}),
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("REPLYLOOP_DB", None)
+                else:
+                    os.environ["REPLYLOOP_DB"] = old
+        self.assertIsNone(result)
+
+    def _seed_delivered(self, db_path: Path, target=None) -> Path:
         clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=timezone.utc))
         db = connect(db_path)
         service = ReminderService(db, RecordingAdapter(), clock)
         service.create_reminder(
             reminder_id="r1",
-            target={"platform": "photon", "chat_id": "c-a", "sender_id": "s-a", "is_dm": True},
+            target=target or {"platform": "photon", "chat_id": "c-a", "sender_id": "s-a", "is_dm": True},
             schedule={"kind": "daily", "times": ["09:00"]},
             timezone="UTC",
         )
         clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc))
         service.tick()
+        db.close()
+        return db_path
+
+    def _seed_legacy_unbound_delivered(self, db_path: Path) -> Path:
+        db_path = self._seed_delivered(db_path)
+        db = connect(db_path)
+        db.connection.execute(
+            "UPDATE reminders SET target = ? WHERE id = ?",
+            (json.dumps({"platform": "photon", "chat_id": "c-a", "is_dm": True}, sort_keys=True), "r1"),
+        )
+        db.connection.commit()
         db.close()
         return db_path
 
