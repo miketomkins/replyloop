@@ -43,8 +43,9 @@ ARTIFACT_PATH_RE = re.compile(
     r"(^|/)(?:"
     r"\.env(?:\..*)?"
     r"|(?:build|dist|logs?|backups?)(?:/|$)"
+    r"|__pycache__(?:/|$)"
     r"|.*\.egg-info(?:/|$)"
-    r"|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|zip|tar|tgz|tar\.gz|whl|log|pem|key|p12|pfx|tmp|swp|orig|rej)$"
+    r"|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|zip|tar|tgz|tar\.gz|whl|pyc|pyo|log|pem|key|p12|pfx|tmp|swp|orig|rej)$"
     r"|[^/]+\.tar\.gz$"
     r"|(?:auth(?:[._-].*)?|credentials?)(?:/|$)"
     r"|.*(?:[._-]auth(?:[._-].*)?|secret|token|credentials?|private[_-]?key).*)",
@@ -213,7 +214,7 @@ def git_files(root: Path) -> list[Path] | None:
 
 
 def walk_files(root: Path) -> list[Path]:
-    ignored_dirs = {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache"}
+    ignored_dirs = {".git", ".hg", ".svn", ".pytest_cache", ".mypy_cache"}
     files: list[Path] = []
     for current, dirs, names in os.walk(root):
         dirs[:] = [name for name in dirs if name not in ignored_dirs]

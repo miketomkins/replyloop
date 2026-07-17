@@ -649,6 +649,8 @@ class PublicRepoAuditTests(unittest.TestCase):
                 root / "replyloop-0.1.0-py3-none-any.whl",
                 root / "replyloop-0.1.0.tar.gz",
                 root / "replyloop.egg-info" / "PKG-INFO",
+                root / "legacy.pyc",
+                root / "__pycache__" / "legacy.cpython-311.pyc",
                 root / "scratch.tmp",
                 root / "notes.swp",
                 root / "patch.orig",
@@ -667,6 +669,8 @@ class PublicRepoAuditTests(unittest.TestCase):
                 "replyloop-0.1.0-py3-none-any.whl: path",
                 "replyloop-0.1.0.tar.gz: path",
                 "replyloop.egg-info/PKG-INFO: path",
+                "legacy.pyc: path",
+                "__pycache__/legacy.cpython-311.pyc: path",
                 "scratch.tmp: path",
                 "notes.swp: path",
                 "patch.orig: path",
@@ -696,6 +700,33 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("private host name in path in git history", result.stderr)
             self.assertNotIn(private_host, result.stderr)
+
+    def test_deleted_python_bytecode_history_paths_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            paths = [
+                root / "legacy.pyc",
+                root / "__pycache__" / "legacy.cpython-311.pyc",
+            ]
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\x00\x00\x00\x00synthetic bytecode")
+            self.assertEqual(git(root, "add", "legacy.pyc", "__pycache__/legacy.cpython-311.pyc").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add bytecode").returncode, 0)
+            for path in paths:
+                path.unlink()
+            self.assertEqual(git(root, "add", "legacy.pyc", "__pycache__/legacy.cpython-311.pyc").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "remove bytecode").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("legacy.pyc: path", result.stderr)
+            self.assertIn("__pycache__/legacy.cpython-311.pyc: path", result.stderr)
+            self.assertIn("git history", result.stderr)
 
     def test_git_history_deleted_pem_private_key_blob_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
