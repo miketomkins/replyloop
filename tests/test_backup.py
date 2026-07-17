@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,7 +28,7 @@ class BackupTests(unittest.TestCase):
             db.add_reminder(Reminder("r1", '{"platform":"telegram","chat_id":"c1"}', "Reminder r1", "Reminder r1 is due.", {"kind": "daily", "times": ["09:00"]}, "UTC"))
             db.close()
             payload = backup_database(source, destination)
-            with sqlite3.connect(f"file:{destination}?mode=ro", uri=True) as check:
+            with closing(sqlite3.connect(f"file:{destination}?mode=ro", uri=True)) as check:
                 integrity = check.execute("PRAGMA integrity_check").fetchone()[0]
                 count = check.execute("SELECT COUNT(*) FROM reminders").fetchone()[0]
         self.assertEqual(payload["backup"]["integrity_check"], "ok")
@@ -52,7 +53,7 @@ class BackupTests(unittest.TestCase):
                 backup_database(source, Path(tmp) / "nested" / ".." / "source.db")
             db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', "Reminder after", "Reminder after is due.", {"kind": "daily", "times": ["10:00"]}, "UTC"))
             db.close()
-            with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as check:
+            with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as check:
                 reminders = [row[0] for row in check.execute("SELECT id FROM reminders ORDER BY id").fetchall()]
         self.assertEqual(reminders, ["after", "before"])
 
@@ -85,7 +86,7 @@ class BackupTests(unittest.TestCase):
             finally:
                 reader.close()
                 db.close()
-            with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as check:
+            with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as check:
                 quick = check.execute("PRAGMA quick_check").fetchone()[0]
                 reminders = [row[0] for row in check.execute("SELECT id FROM reminders ORDER BY id").fetchall()]
         self.assertEqual(quick, "ok")

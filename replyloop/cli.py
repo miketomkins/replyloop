@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -302,9 +303,9 @@ def backup_database(source: Path, destination: Path) -> dict[str, Any]:
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        with sqlite3.connect(source) as src, sqlite3.connect(tmp_path) as dst:
+        with closing(sqlite3.connect(source)) as src, closing(sqlite3.connect(tmp_path)) as dst:
             src.backup(dst)
-        with sqlite3.connect(f"file:{tmp_path}?mode=ro", uri=True) as check:
+        with closing(sqlite3.connect(f"file:{tmp_path}?mode=ro", uri=True)) as check:
             integrity = check.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise CLIError("backup integrity_check failed", 1)

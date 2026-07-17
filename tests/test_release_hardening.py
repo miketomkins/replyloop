@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -250,7 +249,10 @@ class ReleaseHardeningTests(unittest.TestCase):
             package = root / "sample"
             package.mkdir()
             (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
-            shutil.rmtree(ROOT / "__pycache__", ignore_errors=True)
+            sentinel_cache = root / "unrelated" / "__pycache__"
+            sentinel_cache.mkdir(parents=True)
+            sentinel = sentinel_cache / "sentinel.pyc"
+            sentinel.write_bytes(b"pre-existing bytecode")
 
             result = subprocess.run(
                 [sys.executable, "-m", "compileall", "-q", str(package)],
@@ -262,8 +264,20 @@ class ReleaseHardeningTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(list(root.rglob("__pycache__")))
+            self.assertEqual(sentinel.read_bytes(), b"pre-existing bytecode")
+            self.assertEqual(list(root.rglob("__pycache__")), [sentinel_cache])
             self.assertFalse((ROOT / "__pycache__").exists())
+
+            import_result = subprocess.run(
+                [sys.executable, "-c", "import compileall; assert callable(compileall.compile_dir); assert callable(compileall.compile_file)"],
+                cwd=ROOT,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(import_result.returncode, 0, import_result.stderr)
 
     def test_no_skipped_tests_or_committed_build_outputs(self) -> None:
         tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True).stdout.splitlines()

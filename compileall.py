@@ -2,85 +2,57 @@
 
 The release verification contract compiles source paths and then asserts that the
 checkout has no tracked, untracked, or ignored debris. CPython's stdlib
-``compileall`` validates syntax by writing ``__pycache__`` entries, so this
-wrapper delegates to the stdlib module and removes only the bytecode caches it
-created under the requested source roots.
+``compileall`` validates syntax by writing bytecode caches. This wrapper keeps
+the public stdlib API available while its CLI routes bytecode into a temporary
+``PYTHONPYCACHEPREFIX`` equivalent instead of deleting anything from the source
+checkout.
 """
 
 from __future__ import annotations
 
-import runpy
-import shutil
+import importlib.util
+import os
 import sys
 import sysconfig
+import tempfile
 from pathlib import Path
+from types import ModuleType
 
 
-_OPTION_ARGUMENTS = {
-    "-d",
-    "-s",
-    "-p",
-    "-x",
-    "-i",
-    "-j",
-    "--ddir",
-    "--stripdir",
-    "--prependdir",
-    "--rx",
-    "--invalidation-mode",
-    "--workers",
-}
+_STDLIB_COMPILEALL = Path(sysconfig.get_path("stdlib")) / "compileall.py"
+_STDLIB_MODULE: ModuleType | None = None
 
 
 def main() -> int:
-    roots = _source_roots(sys.argv[1:])
-    exit_code = 0
-    try:
-        runpy.run_path(str(Path(sysconfig.get_path("stdlib")) / "compileall.py"), run_name="__main__")
-    except SystemExit as exc:
-        exit_code = _system_exit_code(exc)
-    finally:
-        cleanup_roots = [Path.cwd(), *roots]
-        for root in cleanup_roots:
-            _remove_bytecode_caches(root)
-    return exit_code
+    original_prefix = sys.pycache_prefix
+    original_env = os.environ.get("PYTHONPYCACHEPREFIX")
+    with tempfile.TemporaryDirectory(prefix="replyloop-compileall-") as pycache_prefix:
+        sys.pycache_prefix = pycache_prefix
+        os.environ["PYTHONPYCACHEPREFIX"] = pycache_prefix
+        try:
+            return 0 if _stdlib_compileall().main() else 1
+        finally:
+            sys.pycache_prefix = original_prefix
+            if original_env is None:
+                os.environ.pop("PYTHONPYCACHEPREFIX", None)
+            else:
+                os.environ["PYTHONPYCACHEPREFIX"] = original_env
 
 
-def _source_roots(args: list[str]) -> list[Path]:
-    roots: list[Path] = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--":
-            continue
-        if arg in _OPTION_ARGUMENTS:
-            skip_next = True
-            continue
-        if any(arg.startswith(option + "=") for option in _OPTION_ARGUMENTS if option.startswith("--")):
-            continue
-        if arg.startswith("-"):
-            continue
-        path = Path(arg).resolve()
-        if path.exists():
-            roots.append(path if path.is_dir() else path.parent)
-    if not roots:
-        roots.append(Path.cwd())
-    return roots
+def _stdlib_compileall() -> ModuleType:
+    global _STDLIB_MODULE
+    if _STDLIB_MODULE is None:
+        spec = importlib.util.spec_from_file_location("_replyloop_stdlib_compileall", _STDLIB_COMPILEALL)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load stdlib compileall from {_STDLIB_COMPILEALL}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _STDLIB_MODULE = module
+    return _STDLIB_MODULE
 
 
-def _remove_bytecode_caches(root: Path) -> None:
-    for cache in sorted(root.rglob("__pycache__"), key=lambda path: len(path.parts), reverse=True):
-        shutil.rmtree(cache, ignore_errors=True)
-
-
-def _system_exit_code(exc: SystemExit) -> int:
-    if exc.code is None:
-        return 0
-    if isinstance(exc.code, int):
-        return exc.code
-    return 1
+def __getattr__(name: str) -> object:
+    return getattr(_stdlib_compileall(), name)
 
 
 if __name__ == "__main__":

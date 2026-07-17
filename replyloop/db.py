@@ -40,15 +40,21 @@ class ReplyLoopDB:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.connection = sqlite3.connect(self.path, timeout=30.0)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA busy_timeout = 30000")
+        connection = sqlite3.connect(self.path, timeout=30.0)
         try:
-            self.connection.execute("PRAGMA journal_mode = WAL")
-        except sqlite3.OperationalError as exc:
-            if "database is locked" not in str(exc):
-                raise
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc):
+                    raise
+        except Exception:
+            connection.close()
+            raise
+        else:
+            self.connection = connection
 
     def close(self) -> None:
         self.connection.close()
