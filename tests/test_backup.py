@@ -41,6 +41,29 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("database does not exist", result.stderr)
 
+    def test_backup_rejects_live_source_destination_and_preserves_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.db"
+            db = connect(source)
+            db.add_reminder(Reminder("before", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["09:00"]}, "UTC"))
+            with self.assertRaisesRegex(Exception, "must not be the live source"):
+                backup_database(source, Path(tmp) / "nested" / ".." / "source.db")
+            db.add_reminder(Reminder("after", '{"platform":"telegram","chat_id":"c1"}', {"kind": "daily", "times": ["10:00"]}, "UTC"))
+            db.close()
+            with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as check:
+                reminders = [row[0] for row in check.execute("SELECT id FROM reminders ORDER BY id").fetchall()]
+        self.assertEqual(reminders, ["after", "before"])
+
+    def test_backup_rejects_existing_hardlink_to_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.db"
+            destination = Path(tmp) / "alias.db"
+            db = connect(source)
+            db.close()
+            os.link(source, destination)
+            with self.assertRaisesRegex(Exception, "must not be the live source"):
+                backup_database(source, destination)
+
     def test_doctor_reports_corruption_without_exposing_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "broken.db"

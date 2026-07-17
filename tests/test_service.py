@@ -13,7 +13,7 @@ from replyloop.delivery import DeliveryOutcome, DeliveryRequest, RecordingAdapte
 from replyloop.errors import ValidationError
 from replyloop.models import OccurrenceStatus, ReminderStatus
 from replyloop.replies import ReplyCommand, ReplyIdentity
-from replyloop.service import ReminderService
+from replyloop.service import ReminderService, TickResult
 
 UTC = timezone.utc
 CHAT_KEY = "chat" + "_id"
@@ -114,6 +114,45 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(len(occurrences), 1)
         self.assertEqual(len(adapter.requests), 1)
         self.assertIn("delivery.succeeded", events)
+
+    def test_pause_during_in_flight_delivery_applies_success_without_stranding_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            setup_db = connect(path)
+            setup_service = ReminderService(setup_db, RecordingAdapter(), clock)
+            create_daily(setup_service)
+            setup_db.close()
+
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            adapter = BlockingSuccessAdapter()
+            tick_result: list[TickResult] = []
+
+            def run_tick() -> None:
+                tick_db = connect(path)
+                try:
+                    tick_result.append(ReminderService(tick_db, adapter, clock).tick())
+                finally:
+                    tick_db.close()
+
+            thread = threading.Thread(target=run_tick)
+            thread.start()
+            self.assertTrue(adapter.started.wait(timeout=5))
+            pause_db = connect(path)
+            pause_db.update_reminder_status("reminder-1", ReminderStatus.PAUSED, "reminder.paused")
+            pause_db.close()
+            adapter.release.set()
+            thread.join(timeout=5)
+
+            check_db = connect(path)
+            occurrence = check_db.connection.execute("SELECT status, delivery_claim_id FROM occurrences").fetchone()
+            attempt = check_db.connection.execute("SELECT status, applied_to_occurrence FROM delivery_attempts").fetchone()
+            check_db.close()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual((tick_result[0].attempted, tick_result[0].delivered, tick_result[0].failed), (1, 1, 0))
+        self.assertEqual(occurrence["status"], OccurrenceStatus.DELIVERED.value)
+        self.assertIsNone(occurrence["delivery_claim_id"])
+        self.assertEqual((attempt["status"], attempt["applied_to_occurrence"]), ("success", 1))
 
     def test_restart_does_not_duplicate_occurrences(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

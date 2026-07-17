@@ -288,7 +288,12 @@ def set_status(db: ReplyLoopDB, reminder_id: str, command: str) -> dict[str, Any
 def backup_database(source: Path, destination: Path) -> dict[str, Any]:
     if not source.exists():
         raise CLIError("database does not exist", 1)
+    source_path = source.expanduser().resolve(strict=True)
+    destination = destination.expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    destination_path = destination.resolve(strict=False)
+    if source_path == destination_path or (destination.exists() and os.path.samefile(source_path, destination)):
+        raise CLIError("backup destination must not be the live source database", 1)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     os.close(fd)
     tmp_path = Path(tmp_name)

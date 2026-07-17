@@ -374,7 +374,7 @@ class ReminderService:
                 WHERE id = ?
                   AND status = ?
                   AND delivery_claim_id = ?
-                  AND EXISTS (SELECT 1 FROM reminders WHERE id = ? AND status = ?)
+                  AND EXISTS (SELECT 1 FROM reminders WHERE id = ? AND status IN (?, ?))
                 """,
                 (
                     OccurrenceStatus.DELIVERED.value,
@@ -384,6 +384,7 @@ class ReminderService:
                     claim_id,
                     reminder.id,
                     ReminderStatus.ACTIVE.value,
+                    ReminderStatus.PAUSED.value,
                 ),
             )
             applied = cursor.rowcount == 1
