@@ -19,6 +19,7 @@ from .schedules import due_times_between, validate_schedule
 
 _RETRY_MINUTES = (1, 5, 15)
 _MAX_RETRY_MINUTES = 60
+_MAX_REPLY_DURATION_MINUTES = 366 * 24 * 60
 
 
 @dataclass(frozen=True)
@@ -57,11 +58,10 @@ class ReminderService:
     ) -> Reminder:
         _validate_target(target)
         validate_schedule(schedule, timezone)
+        _validate_duration_minutes(default_snooze_minutes, "default_snooze_minutes")
         _validate_intervals(intervals_minutes, max_deliveries)
-        if default_snooze_minutes <= 0:
-            raise ValidationError("default_snooze_minutes must be positive")
-        if max_deliveries <= 0:
-            raise ValidationError("max_deliveries must be positive")
+        if not isinstance(repeat_last, bool):
+            raise ValidationError("repeat_last must be a boolean")
         stored_schedule = dict(schedule)
         stored_schedule["_replyloop"] = {"max_deliveries": max_deliveries, "repeat_last": repeat_last}
         now = self.clock.now()
@@ -88,6 +88,8 @@ class ReminderService:
             if reminder is None or reminder.status != ReminderStatus.ACTIVE:
                 continue
             if not self._transport_due(occurrence.id, now):
+                continue
+            if not self._claim_occurrence(occurrence.id, now):
                 continue
             attempted += 1
             outcome = self.adapter.deliver(
@@ -128,8 +130,14 @@ class ReminderService:
             else:
                 _set_reminder(connection, reminder_id, ReminderStatus.CANCELLED, self.clock.now())
                 rows = connection.execute(
-                    "SELECT id FROM occurrences WHERE reminder_id = ? AND status IN (?, ?)",
-                    (reminder_id, OccurrenceStatus.DUE.value, OccurrenceStatus.DELIVERED.value),
+                    "SELECT id FROM occurrences WHERE reminder_id = ? AND status IN (?, ?, ?, ?)",
+                    (
+                        reminder_id,
+                        OccurrenceStatus.DUE.value,
+                        OccurrenceStatus.DELIVERED.value,
+                        OccurrenceStatus.SNOOZED.value,
+                        OccurrenceStatus.DELIVERING.value,
+                    ),
                 ).fetchall()
                 for row in rows:
                     _set_occurrence(connection, row["id"], OccurrenceStatus.CANCELLED, self.clock.now())
@@ -195,9 +203,32 @@ class ReminderService:
         delay = _RETRY_MINUTES[failures - 1] if failures <= len(_RETRY_MINUTES) else _MAX_RETRY_MINUTES
         return now >= last_failure + timedelta(minutes=delay)
 
+    def _claim_occurrence(self, occurrence_id: str, now: datetime) -> bool:
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE occurrences SET status = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)",
+                (
+                    OccurrenceStatus.DELIVERING.value,
+                    datetime_to_iso(now),
+                    occurrence_id,
+                    OccurrenceStatus.DUE.value,
+                    OccurrenceStatus.SNOOZED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            _insert_event(connection, Event(None, "occurrence", occurrence_id, "delivery.claimed", {}, now))
+        return True
+
     def _record_failure(self, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime) -> None:
         attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "failure"), occurrence.id, now, DeliveryStatus.FAILURE, outcome.transport, outcome.error)
-        self.db.add_delivery_attempt(attempt, "delivery.failed")
+        with self.db.transaction() as connection:
+            connection.execute(
+                "INSERT INTO delivery_attempts(id, occurrence_id, attempted_at, status, transport, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (attempt.id, attempt.occurrence_id, datetime_to_iso(attempt.attempted_at), attempt.status.value, attempt.transport, attempt.error, datetime_to_iso(attempt.created_at)),
+            )
+            _set_occurrence(connection, occurrence.id, OccurrenceStatus.DUE, now)
+            _insert_event(connection, Event(None, "occurrence", occurrence.id, "delivery.failed", {"attempt_id": attempt.id, "status": attempt.status.value, "transport": attempt.transport}, now))
 
     def _record_success(self, reminder: Reminder, occurrence: Occurrence, outcome: DeliveryOutcome, now: datetime) -> None:
         attempt = DeliveryAttempt(_attempt_id(occurrence.id, now, "success"), occurrence.id, now, DeliveryStatus.SUCCESS, outcome.transport)
@@ -211,12 +242,17 @@ class ReminderService:
 
     def _resolve_open_occurrences(self, connection: sqlite3.Connection, identity: ReplyIdentity) -> list[tuple[str, str]]:
         rows = connection.execute(
-            "SELECT o.id, o.reminder_id, r.target FROM occurrences o JOIN reminders r ON r.id = o.reminder_id WHERE o.status = ? AND r.status = ? ORDER BY o.updated_at DESC, o.id DESC",
+            "SELECT o.id, o.reminder_id, o.updated_at, r.target FROM occurrences o JOIN reminders r ON r.id = o.reminder_id WHERE o.status = ? AND r.status = ? ORDER BY o.updated_at DESC, o.id DESC",
             (OccurrenceStatus.DELIVERED.value, ReminderStatus.ACTIVE.value),
         ).fetchall()
         matches: list[tuple[str, str]] = []
+        latest_updated_at: str | None = None
         for row in rows:
             if target_matches(_decode_target(row["target"]), identity):
+                if latest_updated_at is None:
+                    latest_updated_at = row["updated_at"]
+                elif row["updated_at"] != latest_updated_at:
+                    break
                 matches.append((row["id"], row["reminder_id"]))
         return matches
 
@@ -233,9 +269,22 @@ def _validate_target(target: dict[str, Any]) -> None:
         raise ValidationError("target is_dm must be a boolean")
 
 
+def _validate_duration_minutes(value: int, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValidationError(f"{name} must be an integer")
+    if value <= 0 or value > _MAX_REPLY_DURATION_MINUTES:
+        raise ValidationError(f"{name} is out of bounds")
+
+
 def _validate_intervals(intervals: tuple[int, ...], max_deliveries: int) -> None:
-    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in intervals):
-        raise ValidationError("intervals_minutes must contain positive integers")
+    if not isinstance(max_deliveries, int) or isinstance(max_deliveries, bool):
+        raise ValidationError("max_deliveries must be an integer")
+    if max_deliveries <= 0:
+        raise ValidationError("max_deliveries must be positive")
+    if not isinstance(intervals, tuple):
+        raise ValidationError("intervals_minutes must be a tuple")
+    for value in intervals:
+        _validate_duration_minutes(value, "intervals_minutes")
     if max_deliveries > 1 and not intervals:
         raise ValidationError("intervals_minutes are required for escalation")
 

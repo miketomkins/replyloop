@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
 from replyloop.clock import FakeClock
 from replyloop.db import connect
-from replyloop.delivery import DeliveryOutcome, RecordingAdapter
+from replyloop.delivery import DeliveryOutcome, DeliveryRequest, RecordingAdapter
+from replyloop.errors import ValidationError
 from replyloop.models import OccurrenceStatus, ReminderStatus
 from replyloop.replies import ReplyCommand, ReplyIdentity
 from replyloop.service import ReminderService
@@ -16,6 +19,21 @@ UTC = timezone.utc
 CHAT_KEY = "chat" + "_id"
 SENDER_KEY = "sender" + "_id"
 TARGET = {"platform": "telegram", CHAT_KEY: "conversation-alpha", SENDER_KEY: "participant-alpha", "is_dm": True}
+
+
+class SlowRecordingAdapter:
+    transport = "synthetic"
+
+    def __init__(self) -> None:
+        self.requests: list[DeliveryRequest] = []
+        self._lock = threading.Lock()
+
+    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
+        with self._lock:
+            self.requests.append(request)
+            message_id = f"msg-{len(self.requests)}"
+        time.sleep(0.1)
+        return DeliveryOutcome.success(self.transport, message_id)
 
 
 def make_service(tmp: str, *, outcomes: list[DeliveryOutcome] | None = None, now: datetime | None = None):
@@ -88,6 +106,44 @@ class ServiceLifecycleTests(unittest.TestCase):
             second_db.close()
         self.assertEqual(count, 1)
 
+    def test_two_workers_racing_same_due_occurrence_deliver_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            db = connect(path)
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            create_daily(ReminderService(db, RecordingAdapter(), clock))
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            db.close()
+            adapter = SlowRecordingAdapter()
+            results = []
+            exceptions: list[BaseException] = []
+
+            def run_tick() -> None:
+                worker_db = None
+                try:
+                    worker_db = connect(path)
+                    results.append(ReminderService(worker_db, adapter, clock).tick())
+                except BaseException as exc:
+                    exceptions.append(exc)
+                finally:
+                    if worker_db is not None:
+                        worker_db.close()
+
+            threads = [threading.Thread(target=run_tick) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            check = connect(path)
+            attempts = check.connection.execute("SELECT status FROM delivery_attempts").fetchall()
+            occurrence = check.connection.execute("SELECT status FROM occurrences").fetchone()["status"]
+            check.close()
+        self.assertEqual(exceptions, [])
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertEqual(sum(result.attempted for result in results), 1)
+        self.assertEqual([row["status"] for row in attempts], ["success"])
+        self.assertEqual(occurrence, "delivered")
+
     def test_successful_delivery_starts_escalation_clock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db, clock, adapter, service = make_service(tmp)
@@ -124,7 +180,7 @@ class ServiceLifecycleTests(unittest.TestCase):
             service.tick()
             cancelled = service.handle_reply("cancel", ReplyIdentity("telegram", "conversation-alpha", "participant-alpha", True))
             reminder = db.get_reminder("reminder-1")
-            open_count = db.connection.execute("SELECT COUNT(*) FROM occurrences WHERE status IN ('due','delivered')").fetchone()[0]
+            open_count = db.connection.execute("SELECT COUNT(*) FROM occurrences WHERE status IN ('due','delivering','delivered','snoozed')").fetchone()[0]
             db.close()
         self.assertFalse(wrong.handled)
         self.assertFalse(group.handled)
@@ -138,7 +194,21 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(reminder.status, ReminderStatus.CANCELLED)
         self.assertEqual(open_count, 0)
 
-    def test_ambiguous_latest_delivered_matches_do_not_mutate(self) -> None:
+    def test_reply_resolves_latest_delivered_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, clock, _adapter, service = make_service(tmp)
+            create_daily(service)
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            service.tick()
+            clock.set(datetime(2026, 1, 2, 9, 0, tzinfo=UTC))
+            service.tick()
+            result = service.handle_reply("DONE", ReplyIdentity("telegram", "conversation-alpha", "participant-alpha", True))
+            statuses = [row["status"] for row in db.connection.execute("SELECT status FROM occurrences ORDER BY scheduled_for").fetchall()]
+            db.close()
+        self.assertTrue(result.handled)
+        self.assertEqual(statuses, ["delivered", "done"])
+
+    def test_tied_latest_delivered_matches_are_ambiguous(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db, clock, _adapter, service = make_service(tmp)
             create_daily(service)
@@ -154,7 +224,33 @@ class ServiceLifecycleTests(unittest.TestCase):
             statuses = [row["status"] for row in db.connection.execute("SELECT status FROM occurrences ORDER BY id").fetchall()]
             db.close()
         self.assertFalse(result.handled)
+        self.assertEqual(result.reason, "ambiguous")
         self.assertEqual(statuses, ["delivered", "delivered"])
+
+    def test_create_reminder_rejects_invalid_lifecycle_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, _clock, _adapter, service = make_service(tmp)
+            try:
+                invalid_cases = [
+                    {"default_snooze_minutes": True},
+                    {"default_snooze_minutes": 600000},
+                    {"intervals_minutes": (False,)},
+                    {"max_deliveries": True},
+                    {"repeat_last": "yes"},
+                ]
+                for index, overrides in enumerate(invalid_cases):
+                    with self.subTest(overrides=overrides):
+                        kwargs = {
+                            "reminder_id": f"reminder-invalid-{index}",
+                            "target": TARGET,
+                            "schedule": {"kind": "daily", "times": ["09:00"]},
+                            "timezone": "UTC",
+                        }
+                        kwargs.update(overrides)
+                        with self.assertRaises(ValidationError):
+                            service.create_reminder(**kwargs)
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":

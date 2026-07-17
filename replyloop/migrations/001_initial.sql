@@ -22,7 +22,7 @@ CREATE TABLE occurrences (
     reminder_id TEXT NOT NULL REFERENCES reminders(id) ON DELETE RESTRICT,
     scheduled_for TEXT NOT NULL,
     due_at TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('due', 'delivered', 'done', 'snoozed', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('due', 'delivering', 'delivered', 'done', 'snoozed', 'cancelled')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (reminder_id, scheduled_for)

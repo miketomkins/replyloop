@@ -13,6 +13,10 @@ class DeliveryTests(unittest.TestCase):
             DeliveryOutcome.success("telegram", "")
         with self.assertRaises(ValueError):
             DeliveryOutcome.failure("telegram", "")
+        with self.assertRaises(ValueError):
+            DeliveryOutcome(OutcomeStatus.SUCCESS, "telegram")
+        with self.assertRaises(ValueError):
+            DeliveryOutcome(OutcomeStatus.FAILURE, "telegram", provider_message_id="m1")
 
     def test_recording_adapter_returns_queued_outcomes_then_successes(self) -> None:
         adapter = RecordingAdapter([DeliveryOutcome.failure("synthetic", "offline")])

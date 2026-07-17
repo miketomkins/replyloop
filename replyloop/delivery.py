@@ -27,16 +27,28 @@ class DeliveryOutcome:
     provider_message_id: str | None = None
     error: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, OutcomeStatus):
+            raise ValueError("status must be an OutcomeStatus")
+        if not isinstance(self.transport, str) or not self.transport:
+            raise ValueError("transport is required")
+        if self.status == OutcomeStatus.SUCCESS:
+            if not isinstance(self.provider_message_id, str) or not self.provider_message_id:
+                raise ValueError("provider_message_id is required")
+            if self.error is not None:
+                raise ValueError("successful outcome cannot include error")
+        else:
+            if not isinstance(self.error, str) or not self.error:
+                raise ValueError("error is required")
+            if self.provider_message_id is not None:
+                raise ValueError("failed outcome cannot include provider_message_id")
+
     @classmethod
     def success(cls, transport: str, provider_message_id: str) -> DeliveryOutcome:
-        if not provider_message_id:
-            raise ValueError("provider_message_id is required")
         return cls(OutcomeStatus.SUCCESS, transport, provider_message_id=provider_message_id)
 
     @classmethod
     def failure(cls, transport: str, error: str) -> DeliveryOutcome:
-        if not error:
-            raise ValueError("error is required")
         return cls(OutcomeStatus.FAILURE, transport, error=error)
 
 

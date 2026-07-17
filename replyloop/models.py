@@ -21,6 +21,7 @@ class ReminderStatus(StrEnum):
 
 class OccurrenceStatus(StrEnum):
     DUE = "due"
+    DELIVERING = "delivering"
     DELIVERED = "delivered"
     DONE = "done"
     SNOOZED = "snoozed"
