@@ -35,7 +35,6 @@ class FakeGateway:
     def __init__(self, *, default_adapter=None, profile_adapters=None) -> None:
         self.adapters = {"photon": default_adapter} if default_adapter is not None else {}
         self.profile_adapters = profile_adapters or {}
-        self.replyloop_redacted_skip_logging = True
 
     def _adapter_for_source(self, source):
         profile = getattr(source, "profile", None)
@@ -54,7 +53,7 @@ class HermesHookTests(unittest.TestCase):
                 try:
                     adapter = FakeAdapter()
                     event = self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a")
-                    result = pre_gateway_dispatch(event=event, gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}, replyloop_redacted_skip_logging=True))
+                    result = pre_gateway_dispatch(event=event, gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}))
                     await asyncio.sleep(0)
                     db = connect(db_path)
                     status = db.connection.execute("SELECT status FROM occurrences").fetchone()["status"]
@@ -64,13 +63,15 @@ class HermesHookTests(unittest.TestCase):
                         os.environ.pop("REPLYLOOP_DB", None)
                     else:
                         os.environ["REPLYLOOP_DB"] = old
-            return result, adapter.sent, status
+            return result, adapter.sent, status, event.source.chat_id
 
-        result, sent, status = asyncio.run(run_case())
+        result, sent, status, logged_chat = asyncio.run(run_case())
         self.assertEqual(result, {"action": "skip", "reason": "replyloop-command-handled"})
         self.assertEqual(status, OccurrenceStatus.DONE.value)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["chat_id"], "c-a")
+        self.assertNotEqual(logged_chat, "c-a")
+        self.assertTrue(logged_chat.startswith("id:"))
 
     def test_photon_ack_uses_secondary_profile_adapter(self) -> None:
         async def run_case():
@@ -112,7 +113,7 @@ class HermesHookTests(unittest.TestCase):
                             adapter = FakeAdapter()
                             result = pre_gateway_dispatch(
                                 event=self._event(command, platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
-                                gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}, replyloop_redacted_skip_logging=True),
+                                gateway=SimpleNamespace(adapters={PlatformValue("photon"): adapter}),
                             )
                             await asyncio.sleep(0)
                             db = connect(db_path)
@@ -158,7 +159,7 @@ class HermesHookTests(unittest.TestCase):
                 adapter = FakeAdapter()
                 result = pre_gateway_dispatch(
                     event=self._event("DONE", platform="photon", chat_type="dm", chat_id="c-a", user_id="s-a"),
-                    gateway=SimpleNamespace(adapters={"photon": adapter}, replyloop_redacted_skip_logging=True),
+                    gateway=SimpleNamespace(adapters={"photon": adapter}),
                 )
                 db = connect(db_path)
                 statuses = [row["status"] for row in db.connection.execute("SELECT status FROM occurrences ORDER BY id").fetchall()]
@@ -216,7 +217,7 @@ class HermesHookTests(unittest.TestCase):
         self.assertIn("replyloop-ack-unavailable", result["reason"])
         self.assertEqual(default_sent, [])
 
-    def test_skip_requires_redacted_gateway_logging_prerequisite(self) -> None:
+    def test_skip_redacts_source_chat_before_gateway_skip_logging(self) -> None:
         async def run_case():
             with tempfile.TemporaryDirectory() as tmp:
                 db_path = self._seed_delivered(Path(tmp) / "state.sqlite")
@@ -232,11 +233,13 @@ class HermesHookTests(unittest.TestCase):
                         os.environ.pop("REPLYLOOP_DB", None)
                     else:
                         os.environ["REPLYLOOP_DB"] = old
-            return result, adapter.sent
+            return result, adapter.sent, event.source.chat_id
 
-        result, sent = asyncio.run(run_case())
-        self.assertEqual(result, {"action": "allow", "reason": "replyloop-command-handled-redaction-prerequisite-missing"})
+        result, sent, logged_chat = asyncio.run(run_case())
+        self.assertEqual(result, {"action": "skip", "reason": "replyloop-command-handled"})
         self.assertEqual(len(sent), 1)
+        self.assertNotEqual(logged_chat, "c-a")
+        self.assertTrue(logged_chat.startswith("id:"))
 
     def _seed_delivered(self, db_path: Path) -> Path:
         clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=timezone.utc))

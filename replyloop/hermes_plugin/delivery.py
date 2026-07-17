@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from typing import Any
 
 from replyloop.delivery import DeliveryOutcome, DeliveryRequest
@@ -64,24 +63,12 @@ class HermesDeliveryAdapter:
 
 
 def _send_message(ctx: Any, args: dict[str, Any]) -> Any:
-    """Use a plugin-owned send seam, falling back to Hermes' direct helper.
+    """Dispatch through Hermes' plugin context send_message tool seam."""
 
-    Hermes intentionally does not register ``send_message`` as an agent-callable
-    tool, so plugin delivery must not go through ``PluginContext.dispatch_tool``.
-    Tests can inject ``ctx.replyloop_send_message`` to avoid live transport.
-    """
-
-    seam = getattr(ctx, "replyloop_send_message", None)
-    if callable(seam):
-        return seam(args)
-    helper = _load_send_message_helper()
-    return helper(args)
-
-
-def _load_send_message_helper() -> Callable[[dict[str, Any]], Any]:
-    from tools.send_message_tool import send_message_tool
-
-    return send_message_tool
+    dispatch_tool = getattr(ctx, "dispatch_tool", None)
+    if not callable(dispatch_tool):
+        raise RuntimeError("Hermes PluginContext dispatch_tool is unavailable")
+    return dispatch_tool("send_message", args)
 
 
 def _target_values(target: dict[str, Any], formatted: str) -> list[str]:
