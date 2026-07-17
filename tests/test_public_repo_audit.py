@@ -597,14 +597,15 @@ class PublicRepoAuditTests(unittest.TestCase):
                 self.assertNotIn(value, result.stderr)
 
     def test_git_history_commit_message_absolute_replyloop_path_is_not_normalized_away(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+        with tempfile.TemporaryDirectory(dir="/" + "home" + "/" + "hermes") as tmp:
+            root = Path(tmp) / "replyloop"
+            root.mkdir()
             self.assertEqual(git(root, "init").returncode, 0)
             self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
             self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
             (root / "README.md").write_text("clean\n", encoding="utf-8")
             self.assertEqual(git(root, "add", "README.md").returncode, 0)
-            private_path = "/" + "home" + "/" + "alice" + "/" + "work" + "/" + "replyloop" + "/"
+            private_path = root.as_posix().rstrip("/") + "/"
             self.assertEqual(git(root, "commit", "-m", "bootstrap " + private_path).returncode, 0)
 
             result = run_audit(root)
@@ -613,6 +614,45 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("COMMIT_MESSAGE:1", result.stderr)
             self.assertIn("machine-specific absolute path", result.stderr)
             self.assertNotIn(private_path, result.stderr)
+
+    def test_git_history_broken_ref_fails_audit_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            broken_ref = root / ".git" / "refs" / "heads" / "broken"
+            broken_ref.write_text("not-a-valid-object\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("REV_LIST: path", result.stderr)
+            self.assertIn("unable to enumerate all git history", result.stderr)
+
+    def test_git_history_unreadable_blob_fails_audit_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
+            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            tracked = root / "README.md"
+            tracked.write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            blob = git(root, "hash-object", "README.md").stdout.strip()
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            loose_object = root / ".git" / "objects" / blob[:2] / blob[2:]
+            self.assertTrue(loose_object.exists(), loose_object)
+            loose_object.unlink()
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("README.md: path", result.stderr)
+            self.assertIn("unable to read git blob", result.stderr)
 
     def test_sensitive_pathnames_are_reported_without_sensitive_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

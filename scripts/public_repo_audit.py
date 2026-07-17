@@ -325,12 +325,6 @@ def scan_lines(path: Path, lines: Iterable[str]) -> Iterable[Finding]:
                 yield Finding(path, line_no, "private or loopback IP address")
 
 
-def scan_commit_message(root: Path, path: Path, lines: Iterable[str]) -> Iterable[Finding]:
-    repo_prefix = root.as_posix().rstrip("/") + "/"
-    redacted_lines = (line.replace(repo_prefix, "REPO/") for line in lines)
-    yield from scan_lines(path, redacted_lines)
-
-
 def audit(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for path in candidate_files(root):
@@ -347,21 +341,26 @@ def scan_git_history(root: Path) -> list[Finding]:
         return []
     commits = run_git(root, ["rev-list", "--all"])
     if commits.returncode != 0:
-        return []
+        return [Finding(root / ".git-history" / "REV_LIST", None, "unable to enumerate all git history")]
     findings: list[Finding] = []
     for commit in [line.strip() for line in commits.stdout.splitlines() if line.strip()]:
         message = run_git(root, ["show", "-s", "--format=%B", commit])
-        if message.returncode == 0:
-            message_path = root / ".git-history" / commit[:12] / "COMMIT_MESSAGE"
-            findings.extend(scan_commit_message(root, message_path, message.stdout.splitlines()))
+        message_path = root / ".git-history" / commit[:12] / "COMMIT_MESSAGE"
+        if message.returncode != 0:
+            findings.append(Finding(message_path, None, "unable to read git commit message"))
+        else:
+            findings.extend(scan_lines(message_path, message.stdout.splitlines()))
         tree = run_git(root, ["ls-tree", "-r", "--name-only", "-z", commit])
         if tree.returncode != 0:
+            findings.append(Finding(root / ".git-history" / commit[:12], None, "unable to enumerate git tree"))
             continue
         for rel in [item for item in tree.stdout.split("\0") if item]:
             history_path = root / ".git-history" / commit[:12] / rel
             findings.extend(scan_history_path(root, history_path, rel))
             blob = run_git_bytes(root, ["cat-file", "-p", f"{commit}:{rel}"])
-            if blob.returncode == 0 and looks_text_bytes(blob.stdout):
+            if blob.returncode != 0:
+                findings.append(Finding(history_path, None, "unable to read git blob"))
+            elif looks_text_bytes(blob.stdout):
                 text = blob.stdout.decode("utf-8", errors="replace")
                 findings.extend(scan_lines(history_path, text.splitlines()))
     return findings
