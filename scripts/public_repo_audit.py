@@ -380,20 +380,78 @@ def scan_git_refs(root: Path) -> list[Finding]:
         refname, object_id, object_type = parts
         ref_path = root / ".git-refs" / object_id[:12] / "REF_NAME"
         findings.extend(scan_path_value(ref_path, refname, " in git ref"))
-        if object_type == "tag":
-            findings.extend(scan_git_tag_message(root, object_id))
+        findings.extend(scan_lines(ref_path, [refname]))
+        findings.extend(scan_git_ref_object(root, object_id, object_type, set()))
     return findings
 
 
-def scan_git_tag_message(root: Path, object_id: str) -> list[Finding]:
+def scan_git_ref_object(root: Path, object_id: str, object_type: str, seen: set[str]) -> list[Finding]:
+    if object_id in seen:
+        return []
+    seen.add(object_id)
+    if object_type == "commit":
+        return []
+    if object_type == "tag":
+        return scan_git_tag_object(root, object_id, seen)
+    if object_type == "blob":
+        return scan_git_ref_blob(root, object_id)
+    if object_type == "tree":
+        return scan_git_ref_tree(root, object_id, seen)
+    return [Finding(root / ".git-refs" / object_id[:12], None, f"unsupported git ref object type: {object_type}")]
+
+
+def scan_git_tag_object(root: Path, object_id: str, seen: set[str]) -> list[Finding]:
     tag = run_git(root, ["cat-file", "-p", object_id])
     tag_path = root / ".git-refs" / object_id[:12] / "TAG_MESSAGE"
     if tag.returncode != 0:
         return [Finding(tag_path, None, "unable to read git annotated tag message")]
-    _, separator, message = tag.stdout.partition("\n\n")
-    if not separator:
+    header, separator, message = tag.stdout.partition("\n\n")
+    findings: list[Finding] = []
+    target_id = ""
+    target_type = ""
+    for line in header.splitlines():
+        if line.startswith("object "):
+            target_id = line.removeprefix("object ").strip()
+        elif line.startswith("type "):
+            target_type = line.removeprefix("type ").strip()
+    if separator:
+        findings.extend(scan_lines(tag_path, message.splitlines()))
+    if target_id and target_type:
+        findings.extend(scan_git_ref_object(root, target_id, target_type, seen))
+    else:
+        findings.append(Finding(root / ".git-refs" / object_id[:12], None, "unable to parse git annotated tag target"))
+    return findings
+
+
+def scan_git_ref_blob(root: Path, object_id: str) -> list[Finding]:
+    blob_path = root / ".git-refs" / object_id[:12] / "BLOB"
+    blob = run_git_bytes(root, ["cat-file", "-p", object_id])
+    if blob.returncode != 0:
+        return [Finding(blob_path, None, "unable to read git ref blob")]
+    if not looks_text_bytes(blob.stdout):
         return []
-    return list(scan_lines(tag_path, message.splitlines()))
+    text = blob.stdout.decode("utf-8", errors="replace")
+    return list(scan_lines(blob_path, text.splitlines()))
+
+
+def scan_git_ref_tree(root: Path, object_id: str, seen: set[str]) -> list[Finding]:
+    tree = run_git(root, ["ls-tree", "-r", "-z", object_id])
+    tree_path = root / ".git-refs" / object_id[:12]
+    if tree.returncode != 0:
+        return [Finding(tree_path, None, "unable to enumerate git ref tree")]
+    findings: list[Finding] = []
+    for record in [item for item in tree.stdout.split("\0") if item]:
+        metadata, separator, rel = record.partition("\t")
+        parts = metadata.split()
+        if not separator or len(parts) < 3:
+            findings.append(Finding(tree_path, None, "unable to parse git ref tree"))
+            continue
+        object_type = parts[1]
+        child_id = parts[2]
+        history_path = tree_path / rel
+        findings.extend(scan_history_path(root, history_path, rel))
+        findings.extend(scan_git_ref_object(root, child_id, object_type, seen))
+    return findings
 
 
 def scan_history_path(root: Path, history_path: Path, rel: str) -> Iterable[Finding]:

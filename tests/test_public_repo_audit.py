@@ -656,6 +656,71 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("private host name in path", result.stderr)
             self.assertNotIn(private_host, result.stderr)
 
+    def test_git_ref_name_is_scanned_for_provider_tokens_without_sensitive_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            token = "ghp_" + "A" * 24
+            self.assertEqual(git(root, "branch", "release/" + token).returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-refs/", result.stderr)
+            self.assertIn("REF_NAME:1", result.stderr)
+            self.assertIn("github token marker", result.stderr)
+            self.assertNotIn(token, result.stderr)
+
+    def test_git_annotated_tag_blob_target_is_scanned_without_sensitive_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            secret_name = "api" + "_" + "key"
+            secret_value = "B" * 24
+            secret_blob = root / "secret-blob.txt"
+            secret_blob.write_text(f"{secret_name}={secret_value}\n", encoding="utf-8")
+            blob = git(root, "hash-object", "-w", str(secret_blob))
+            secret_blob.unlink()
+            self.assertEqual(blob.returncode, 0, blob.stderr)
+            blob_id = blob.stdout.strip()
+            self.assertEqual(git(root, "tag", "-a", "blob-release", blob_id, "-m", "clean release").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-refs/", result.stderr)
+            self.assertIn("BLOB:1", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+
+    def test_git_nested_annotated_tag_message_is_scanned_without_sensitive_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            secret_name = "api" + "_" + "key"
+            secret_value = "C" * 24
+            self.assertEqual(git(root, "tag", "-a", "inner", "-m", f"inner {secret_name}={secret_value}").returncode, 0)
+            inner_id = git(root, "rev-parse", "inner^{tag}").stdout.strip()
+            self.assertEqual(git(root, "tag", "-a", "outer", inner_id, "-m", "outer clean").returncode, 0)
+            self.assertEqual(git(root, "tag", "-d", "inner").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-refs/", result.stderr)
+            self.assertIn("TAG_MESSAGE:1", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+
     def test_git_history_broken_ref_fails_audit_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
