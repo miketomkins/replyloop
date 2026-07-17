@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from replyloop.errors import ValidationError
 from replyloop.schedules import due_times_between, validate_schedule
@@ -17,6 +18,7 @@ class ScheduleValidationTests(unittest.TestCase):
         invalid = [
             {"kind": "daily", "times": []},
             {"kind": "daily", "times": ["8:00"]},
+            {"kind": "daily", "times": ["０８:３０"]},
             {"kind": "daily", "times": ["08:00", "08:00"]},
             {"kind": "daily", "times": ["24:00"]},
             {"kind": "daily", "times": ["08:00"], "extra": True},
@@ -48,6 +50,26 @@ class ScheduleValidationTests(unittest.TestCase):
         self.assertEqual(schedule.at.astimezone(UTC), datetime(2026, 7, 20, 16, 0, tzinfo=UTC))
         with self.assertRaises(ValidationError):
             validate_schedule({"kind": "daily", "times": ["09:00"]}, "Missing/Zone")
+
+    def test_once_requires_full_ascii_datetime(self) -> None:
+        invalid = [
+            "2026-01-01",
+            "2026-01-01T０９:００:００",
+            "2026-01-01T09",
+        ]
+        for value in invalid:
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    validate_schedule({"kind": "once", "at": value}, "America/Los_Angeles")
+
+    def test_once_aware_offset_must_match_declared_timezone(self) -> None:
+        with self.assertRaises(ValidationError):
+            validate_schedule({"kind": "once", "at": "2026-07-20T09:00:00+09:00"}, "America/Los_Angeles")
+
+        schedule = validate_schedule({"kind": "once", "at": "2026-07-20T09:00:00-07:00"}, "America/Los_Angeles")
+        assert schedule.at is not None
+        self.assertEqual(schedule.at.tzinfo, ZoneInfo("America/Los_Angeles"))
+        self.assertEqual(schedule.at.astimezone(UTC), datetime(2026, 7, 20, 16, 0, tzinfo=UTC))
 
 
 class DueTimeGenerationTests(unittest.TestCase):

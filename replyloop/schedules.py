@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -12,6 +13,14 @@ from .errors import ValidationError
 from .models import to_utc
 
 UTC = timezone.utc
+_COLON = ":"
+_ONCE_AT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}" + _COLON + r"\d{2}"
+    r"(?:" + _COLON + r"\d{2}(?:\.\d{1,6})?)?"
+    r"(?:Z|[+-]\d{2}" + _COLON + r"\d{2})?$",
+    re.ASCII,
+)
+_HHMM_RE = re.compile(r"^\d{2}" + _COLON + r"\d{2}$", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -111,17 +120,32 @@ def _reject_unknown_keys(schedule: dict[str, Any], allowed: set[str]) -> None:
 
 
 def _parse_once_at(value: str, timezone_name: str) -> datetime:
+    if _ONCE_AT_RE.fullmatch(value) is None:
+        raise ValidationError("once at must be an ISO datetime with a date and time")
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValidationError("once at must be an ISO datetime") from exc
+    tz = _load_timezone(timezone_name)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        tz = _load_timezone(timezone_name)
         candidates = _local_wall_time_candidates(parsed.date(), parsed.time().replace(tzinfo=None), tz)
         if len(candidates) != 1:
             raise ValidationError("once at must not be nonexistent or ambiguous when timezone is omitted")
         return candidates[0]
-    return parsed
+
+    # Once schedules are local wall-clock times in the declared IANA timezone.
+    # If an offset is supplied, it must agree with that timezone for the named
+    # local instant. We then normalize to ZoneInfo so stored reminder timezone
+    # and generated due instant cannot contradict each other.
+    wall_time = parsed.time().replace(tzinfo=None)
+    matching_candidates = [
+        candidate
+        for candidate in _local_wall_time_candidates(parsed.date(), wall_time, tz)
+        if candidate.utcoffset() == parsed.utcoffset()
+    ]
+    if not matching_candidates:
+        raise ValidationError("once at offset must match the declared timezone")
+    return matching_candidates[0]
 
 
 def _parse_times(values: Any) -> tuple[time, ...]:
@@ -133,9 +157,9 @@ def _parse_times(values: Any) -> tuple[time, ...]:
         if not isinstance(value, str):
             raise ValidationError("times must contain HH:MM strings")
         try:
-            hour_text, minute_text = value.split(":", 1)
-            if len(hour_text) != 2 or len(minute_text) != 2:
+            if _HHMM_RE.fullmatch(value) is None:
                 raise ValueError
+            hour_text, minute_text = value.split(":", 1)
             hour = int(hour_text)
             minute = int(minute_text)
             item = time(hour=hour, minute=minute)
