@@ -66,7 +66,18 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("openai token marker", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
     ("gitlab token marker", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
     ("slack token marker", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("machine-specific absolute path", re.compile(r"(?i)(?:/(?:Users|home|root)(?:/[A-Za-z0-9._-]+)?\b|[A-Za-z]:\\users\\[A-Za-z0-9._-]+\b)")),
+    ("google api key marker", re.compile(r"\bAIza[A-Za-z0-9_-]{20,}\b")),
+    ("stripe secret key marker", re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b")),
+    ("npm token marker", re.compile(r"\bnpm_[A-Za-z0-9_-]{20,}\b")),
+    ("pypi token marker", re.compile(r"\bpypi-[A-Za-z0-9_-]{20,}\b")),
+    ("xai token marker", re.compile(r"\bxai-[A-Za-z0-9_-]{20,}\b")),
+    ("age private key marker", re.compile(r"\bAGE-SECRET-KEY-1[A-Z0-9]+\b")),
+    (
+        "machine-specific absolute path",
+        re.compile(
+            r"(?i)(?:/(?:Users|home|root)(?:/[A-Za-z0-9._-]+)?\b|[A-Za-z]:\\users\\[A-Za-z0-9._-]+\b|\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9.$_-]+(?:\\|\b))"
+        ),
+    ),
     ("vault or private config path", re.compile(r"(?i)/(?:private|vault|secrets?)(?:/|\b)")),
     ("loopback host name", re.compile(r"(?i)\b" + "local" + "host" + r"\b")),
     (
@@ -83,10 +94,18 @@ PATH_REDACTIONS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bAIza[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bnpm_[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bpypi-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bxai-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bAGE-SECRET-KEY-1[A-Z0-9]+\b"),
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)(?:[=:._-])[^/]+"),
 )
+
+SENSITIVE_NAME_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)")
 
 IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])")
@@ -110,7 +129,18 @@ def redact_path(value: str) -> str:
     redacted = value
     for pattern in PATH_REDACTIONS:
         redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted
+    return "/".join(redact_path_segment(segment) for segment in redacted.split("/"))
+
+
+def redact_path_segment(segment: str) -> str:
+    marker = SENSITIVE_NAME_RE.search(segment)
+    if marker is None:
+        return segment
+    suffix = ""
+    dot = segment.rfind(".")
+    if dot > marker.end():
+        suffix = segment[dot:]
+    return segment[: marker.end()] + "[REDACTED]" + suffix
 
 
 def run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:

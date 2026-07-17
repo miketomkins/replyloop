@@ -35,4 +35,4 @@ Run the repository audit before commits and in CI:
 python3 scripts/public_repo_audit.py .
 ```
 
-The audit reports file and line evidence without printing candidate secret values.
+The audit reports file and line evidence without printing candidate secret values. It is a defense-in-depth guardrail for common privacy mistakes and known token shapes, not proof that no possible secret exists. Use it alongside human review and GitHub secret scanning before publishing changes.

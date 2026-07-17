@@ -256,9 +256,9 @@ class PublicRepoAuditTests(unittest.TestCase):
             result = run_audit(root)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("tokens.txt:1", result.stderr)
+            self.assertIn("token[REDACTED].txt:1", result.stderr)
             self.assertIn("openai token marker", result.stderr)
-            self.assertIn("tokens.txt:2", result.stderr)
+            self.assertIn("token[REDACTED].txt:2", result.stderr)
             self.assertIn("gitlab token marker", result.stderr)
             self.assertNotIn(openai_token, result.stderr)
             self.assertNotIn(gitlab_token, result.stderr)
@@ -368,6 +368,89 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("network.txt:1", result.stderr)
             self.assertIn("private or loopback IP address", result.stderr)
             self.assertNotIn(loopback, result.stderr)
+
+    def test_credential_filename_without_separator_is_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = "candidate" + "Value" + "123456"
+            parent = root / "config"
+            parent.mkdir()
+            (parent / ("secret" + candidate + ".txt")).write_text("safe\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("config/" + "secret" + "[REDACTED].txt: path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
+            self.assertNotIn(candidate, result.stderr)
+
+    def test_raw_common_cloud_package_and_ai_tokens_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tokens = [
+                "AI" + "za" + "A" * 32,
+                "sk" + "_" + "live" + "_" + "B" * 32,
+                "sk" + "_" + "test" + "_" + "C" * 32,
+                "npm" + "_" + "D" * 32,
+                "pypi" + "-" + "E" * 32,
+                "xai" + "-" + "F" * 32,
+            ]
+            (root / "samples.txt").write_text("\n".join(tokens) + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            for line_no in range(1, len(tokens) + 1):
+                self.assertIn(f"samples.txt:{line_no}", result.stderr)
+            self.assertIn("google api key marker", result.stderr)
+            self.assertIn("stripe secret key marker", result.stderr)
+            self.assertIn("npm token marker", result.stderr)
+            self.assertIn("pypi token marker", result.stderr)
+            self.assertIn("xai token marker", result.stderr)
+            for token in tokens:
+                self.assertNotIn(token, result.stderr)
+
+    def test_common_token_near_misses_are_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            near_misses = [
+                "AI" + "zb" + "A" * 32,
+                "sk" + "_" + "demo" + "_" + "B" * 32,
+                "npx" + "_" + "D" * 32,
+                "pypi" + ":" + "E" * 32,
+                "xai" + ":" + "F" * 32,
+            ]
+            (root / "near-misses.txt").write_text("\n".join(near_misses) + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_windows_unc_absolute_path_is_reported_without_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unc_path = "\\" + "\\" + "private-host" + "\\" + "share" + "\\" + "config"
+            (root / "paths.txt").write_text("path=" + unc_path + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("paths.txt:1", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertNotIn(unc_path, result.stderr)
+
+    def test_age_private_key_marker_is_reported_without_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            key = "AGE" + "-" + "SECRET" + "-" + "KEY" + "-" + "1" + "G" * 48
+            (root / "age.txt").write_text(key + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("age.txt:1", result.stderr)
+            self.assertIn("age private key marker", result.stderr)
+            self.assertNotIn(key, result.stderr)
 
 
 if __name__ == "__main__":
