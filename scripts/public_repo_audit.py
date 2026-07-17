@@ -180,11 +180,18 @@ def redact_path_segment(segment: str) -> str:
     return segment[: marker.end()] + "[REDACTED]" + suffix
 
 
+def git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
 def run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=root,
         check=False,
+        env=git_env(),
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -198,6 +205,7 @@ def run_git_bytes(root: Path, args: list[str]) -> subprocess.CompletedProcess[by
         ["git", *args],
         cwd=root,
         check=False,
+        env=git_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
@@ -339,6 +347,9 @@ def scan_git_history(root: Path) -> list[Finding]:
     probe = run_git(root, ["rev-parse", "--is-inside-work-tree"])
     if probe.returncode != 0 or probe.stdout.strip() != "true":
         return []
+    preflight = scan_git_history_preflight(root)
+    if preflight:
+        return preflight
     commits = run_git(root, ["rev-list", "--all"])
     if commits.returncode != 0:
         return [Finding(root / ".git-history" / "REV_LIST", None, "unable to enumerate all git history")]
@@ -364,6 +375,21 @@ def scan_git_history(root: Path) -> list[Finding]:
             elif looks_text_bytes(blob.stdout):
                 text = blob.stdout.decode("utf-8", errors="replace")
                 findings.extend(scan_lines(history_path, text.splitlines()))
+    return findings
+
+
+def scan_git_history_preflight(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    replace_refs = run_git(root, ["for-each-ref", "--format=%(refname)", "refs/replace/"])
+    if replace_refs.returncode != 0:
+        findings.append(Finding(root / ".git-history" / "REPLACE_REFS", None, "unable to enumerate git replacement refs"))
+    elif replace_refs.stdout.strip():
+        findings.append(Finding(root / ".git-history" / "REPLACE_REFS", None, "git replacement refs are not allowed during public history audit"))
+    shallow = run_git(root, ["rev-parse", "--is-shallow-repository"])
+    if shallow.returncode != 0:
+        findings.append(Finding(root / ".git-history" / "SHALLOW", None, "unable to determine whether git repository is shallow"))
+    elif shallow.stdout.strip() == "true":
+        findings.append(Finding(root / ".git-history" / "SHALLOW", None, "shallow git repository cannot prove all history was scanned"))
     return findings
 
 

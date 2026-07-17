@@ -912,6 +912,75 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("passed", result.stdout)
 
+    def test_git_replacement_refs_fail_closed_before_replaced_history_can_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            secret_name = "api" + "_" + "key"
+            secret_value = "R" * 24
+            tracked = root / "history.txt"
+            tracked.write_text(f"{secret_name}={secret_value}\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "history.txt").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "add unsafe original").returncode, 0)
+            unsafe_commit = git(root, "rev-parse", "HEAD").stdout.strip()
+            tracked.write_text("clean replacement\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "history.txt").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "clean replacement").returncode, 0)
+            clean_commit = git(root, "rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(git(root, "replace", unsafe_commit, clean_commit).returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("REPLACE_REFS: path", result.stderr)
+            self.assertIn("git replacement refs are not allowed", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+
+    def test_shallow_repository_fails_closed_before_claiming_history_was_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            init_repo(source)
+            secret_name = "api" + "_" + "key"
+            secret_value = "S" * 24
+            hidden = source / "deleted-secret.txt"
+            hidden.write_text(f"{secret_name}={secret_value}\n", encoding="utf-8")
+            self.assertEqual(git(source, "add", "deleted-secret.txt").returncode, 0)
+            self.assertEqual(git(source, "commit", "-m", "add hidden parent secret").returncode, 0)
+            hidden.unlink()
+            (source / "README.md").write_text("clean head\n", encoding="utf-8")
+            self.assertEqual(git(source, "add", "deleted-secret.txt", "README.md").returncode, 0)
+            self.assertEqual(git(source, "commit", "-m", "clean head").returncode, 0)
+            shallow = Path(tmp) / "shallow"
+            clone = subprocess.run(
+                ["git", "clone", "--depth", "1", "file://" + source.as_posix(), str(shallow)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(clone.returncode, 0, clone.stderr)
+
+            result = run_audit(shallow)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SHALLOW: path", result.stderr)
+            self.assertIn("shallow git repository cannot prove all history was scanned", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+
+            no_local = Path(tmp) / "no-local-copy"
+            clone_shallow = subprocess.run(
+                ["git", "clone", "--no-local", str(shallow), str(no_local)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(clone_shallow.returncode, 0, clone_shallow.stderr)
+            cloned_result = run_audit(no_local)
+            self.assertNotEqual(cloned_result.returncode, 0)
+            self.assertIn("shallow git repository cannot prove all history was scanned", cloned_result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
