@@ -79,14 +79,19 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     ("vault or private config path", re.compile(r"(?i)/(?:private|vault|secrets?)(?:/|\b)")),
-    ("loopback host name", re.compile(r"(?i)\b" + "local" + "host" + r"\b")),
+    ("private host name", re.compile(r"(?i)\b(?:" + "local" + "host" + r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:internal|local)\b(?![.-]))")),
     (
         "phone number pattern",
         re.compile(r"(?<![\w.])(?:\+\d[\d .()\-]{7,}\d|\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4})(?![\w.])"),
     ),
     (
         "chat or sender identifier pattern",
-        re.compile(r"(?i)(?:\b|['\"])(?:chat|sender)[_-]?id(?:\b|['\"])\s*[:=]\s*['\"]?[A-Za-z0-9_-]{6,}"),
+        re.compile(
+            r"(?i)(?:"
+            r"(?:\b|['\"])(?:chat|sender)[_-]?id(?:\b|['\"])\s*[:=]\s*['\"]?[A-Za-z0-9_-]{6,}"
+            r"|(?:^|\s)--(?:chat|sender)\s+['\"]?[0-9]{6,}['\"]?(?:\s|$)"
+            r")"
+        ),
     ),
 )
 

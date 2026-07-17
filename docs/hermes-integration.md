@@ -18,7 +18,7 @@ Installing ReplyLoop does not enable live messaging. Hermes plugin activation, s
 Hermes plugins are opt-in. Enable `replyloop` only in the Hermes profile that will run a reviewed test gateway or scheduler:
 
 ```bash
-hermes config set plugins.enabled '["replyloop"]'
+hermes plugins enable replyloop
 ```
 
 Do not enable this against live personal channels until placeholders, database path, scheduler cadence, and transport behavior have been reviewed in an operator-controlled test channel.

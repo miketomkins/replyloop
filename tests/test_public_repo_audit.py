@@ -112,6 +112,43 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("ids.txt:2", result.stderr)
             self.assertIn("chat or sender identifier pattern", result.stderr)
 
+    def test_cli_chat_and_sender_identifier_values_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chat_value = "123" + "456" + "789"
+            sender_value = "987" + "654" + "321"
+            (root / "commands.txt").write_text(
+                f"replyloop create --platform photon --chat {chat_value} --sender {sender_value}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("commands.txt:1", result.stderr)
+            self.assertIn("chat or sender identifier pattern", result.stderr)
+            self.assertNotIn(chat_value, result.stderr)
+            self.assertNotIn(sender_value, result.stderr)
+
+    def test_private_hostnames_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            internal_host = "nas" + "." + "internal"
+            local_host = "printer" + "." + "local"
+            (root / "hosts.txt").write_text(
+                f"backup={internal_host}\nprint={local_host}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("hosts.txt:1", result.stderr)
+            self.assertIn("hosts.txt:2", result.stderr)
+            self.assertIn("private host name", result.stderr)
+            self.assertNotIn(internal_host, result.stderr)
+            self.assertNotIn(local_host, result.stderr)
+
     def test_quoted_json_keys_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
