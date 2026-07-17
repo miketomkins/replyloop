@@ -227,7 +227,7 @@ class ReleaseHardeningTests(unittest.TestCase):
             "scripts/public_repo_audit.py .",
             "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover",
             "compileall -q replyloop",
-            "pip install --upgrade build wheel",
+            "pip install --upgrade 'setuptools>=68' build wheel",
             "python3 -m build --sdist --outdir dist",
             "pip wheel --no-deps --no-build-isolation",
             "scripts/verify_wheel.py",

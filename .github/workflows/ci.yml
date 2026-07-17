@@ -24,7 +24,7 @@ jobs:
       - name: Compile package
         run: python3 -m compileall -q replyloop
       - name: Provision packaging tools
-        run: python3 -m pip install --upgrade build wheel
+        run: python3 -m pip install --upgrade 'setuptools>=68' build wheel
       - name: Build source distribution
         run: python3 -m build --sdist --outdir dist
       - name: Build wheel
