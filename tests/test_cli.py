@@ -155,6 +155,15 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)["doctor"]["ok"])
 
+    def test_doctor_json_and_human_output_shape_match_for_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            json_result = run_cli(tmp, "--json", "doctor")
+            human_result = run_cli(tmp, "doctor")
+        self.assertEqual(json_result.returncode, 0, json_result.stderr)
+        self.assertEqual(human_result.returncode, 0, human_result.stderr)
+        self.assertEqual(json.loads(json_result.stdout)["doctor"]["counts"], json.loads(human_result.stdout)["doctor"]["counts"])
+        self.assertEqual(json.loads(json_result.stdout)["doctor"].keys(), json.loads(human_result.stdout)["doctor"].keys())
+
 
 if __name__ == "__main__":
     unittest.main()

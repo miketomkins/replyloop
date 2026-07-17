@@ -10,7 +10,7 @@ import sys
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -321,8 +321,10 @@ def _is_live_sqlite_path(source_path: Path, destination: Path, destination_path:
     return False
 
 
-def doctor(path: Path) -> dict[str, Any]:
+def doctor(path: Path, now_utc: datetime | None = None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
+    now = now_utc or datetime.now(UTC)
+    due_boundary = now + timedelta(microseconds=1)
     path.parent.mkdir(parents=True, exist_ok=True)
     checks.append(check_item("parent_directory", path.parent.is_dir() and os.access(path.parent, os.R_OK | os.W_OK | os.X_OK), str(path.parent)))
     checks.append(check_timezone())
@@ -333,7 +335,7 @@ def doctor(path: Path) -> dict[str, Any]:
             checks.append(check_item("schema_version", current == EXPECTED_SCHEMA_VERSION, current or "missing"))
             quick = db.connection.execute("PRAGMA quick_check").fetchone()[0]
             checks.append(check_item("quick_check", quick == "ok", quick))
-            due_count = db.connection.execute("SELECT COUNT(*) FROM occurrences WHERE status IN ('due','snoozed')").fetchone()[0]
+            due_count = db.count_due_occurrences(due_boundary)
             pending_count = db.connection.execute("SELECT COUNT(*) FROM reminders WHERE status = 'active'").fetchone()[0]
             retry_count = db.connection.execute(
                 """

@@ -7,13 +7,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from replyloop.cli import backup_database, doctor
 from replyloop.db import connect
-from replyloop.models import Reminder
+from replyloop.models import Occurrence, OccurrenceStatus, Reminder
 
 ROOT = Path(__file__).resolve().parents[1]
+UTC = timezone.utc
 
 
 class BackupTests(unittest.TestCase):
@@ -125,6 +127,35 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(checks["quick_check"])
         self.assertTrue(checks["parent_directory"])
         self.assertTrue(checks["clock_timezone"])
+
+    def test_doctor_due_count_excludes_future_snoozes_until_boundary_arrives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.db"
+            db = connect(path)
+            scheduled = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+            snoozed_until = scheduled + timedelta(hours=1)
+            db.add_reminder(Reminder("r-snooze", '{"platform":"telegram","chat_id":"c1"}', {"kind": "once", "at": "2026-01-01T09:00:00Z"}, "UTC"))
+            db.add_occurrence(Occurrence("o-snooze", "r-snooze", scheduled, OccurrenceStatus.SNOOZED, due_at=snoozed_until))
+            db.close()
+
+            before = doctor(path, scheduled + timedelta(minutes=30))
+            at_boundary = doctor(path, snoozed_until)
+
+        self.assertEqual(before["doctor"]["counts"]["due"], 0)
+        self.assertEqual(at_boundary["doctor"]["counts"]["due"], 1)
+
+    def test_doctor_due_count_includes_current_due_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.db"
+            db = connect(path)
+            due_at = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+            db.add_reminder(Reminder("r-due", '{"platform":"telegram","chat_id":"c1"}', {"kind": "once", "at": "2026-01-01T09:00:00Z"}, "UTC"))
+            db.add_occurrence(Occurrence("o-due", "r-due", due_at, OccurrenceStatus.DUE, due_at=due_at))
+            db.close()
+
+            payload = doctor(path, due_at)
+
+        self.assertEqual(payload["doctor"]["counts"]["due"], 1)
 
 
 if __name__ == "__main__":
