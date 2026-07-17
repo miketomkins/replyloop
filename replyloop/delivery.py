@@ -14,11 +14,24 @@ class OutcomeStatus(StrEnum):
 
 @dataclass(frozen=True)
 class DeliveryRequest:
+    """User-visible delivery request passed to adapters.
+
+    ``idempotency_key`` identifies the logical delivery, not a local transport
+    attempt or database claim. Adapters should forward it to providers that
+    support idempotent sends. ReplyLoop's local claim fencing keeps its own
+    state consistent, but exactly-once external delivery across a crash after
+    send requires provider or adapter support for this key.
+    """
+
     occurrence_id: str
     reminder_id: str
     idempotency_key: str
     target: dict[str, str | bool | None]
     text: str
+
+    def __post_init__(self) -> None:
+        if not self.idempotency_key:
+            raise ValueError("idempotency_key is required")
 
 
 @dataclass(frozen=True)
@@ -57,7 +70,13 @@ class DeliveryAdapter(Protocol):
     transport: str
 
     def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
-        """Attempt delivery and return a structured outcome without raising for transport failure."""
+        """Attempt delivery and return a structured outcome without raising for transport failure.
+
+        External exactly-once behavior depends on the adapter/provider honoring
+        ``request.idempotency_key``. Local regex parsing, SQLite transactions,
+        and claim fencing cannot deduplicate a provider that ignores that key
+        after a crash or timeout following a successful send.
+        """
         ...
 
 

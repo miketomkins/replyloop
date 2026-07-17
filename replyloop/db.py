@@ -171,7 +171,13 @@ class ReplyLoopDB:
                 "occurrence",
                 attempt.occurrence_id,
                 event_type,
-                {"attempt_id": attempt.id, "status": attempt.status.value, "transport": attempt.transport},
+                {
+                    "attempt_id": attempt.id,
+                    "status": attempt.status.value,
+                    "transport": attempt.transport,
+                    "logical_delivery_id": attempt.logical_delivery_id,
+                    "applied": attempt.applied_to_occurrence,
+                },
             ),
         )
 
@@ -282,16 +288,20 @@ def _insert_occurrence(connection: sqlite3.Connection, occurrence: Occurrence) -
 def _insert_delivery_attempt(connection: sqlite3.Connection, attempt: DeliveryAttempt) -> None:
     connection.execute(
         """
-        INSERT INTO delivery_attempts(id, occurrence_id, attempted_at, status, transport, error, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO delivery_attempts(
+            id, occurrence_id, logical_delivery_id, attempted_at, status,
+            transport, error, applied_to_occurrence, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             attempt.id,
             attempt.occurrence_id,
+            attempt.logical_delivery_id,
             datetime_to_iso(attempt.attempted_at),
             attempt.status.value,
             attempt.transport,
             attempt.error,
+            int(attempt.applied_to_occurrence),
             datetime_to_iso(attempt.created_at),
         ),
     )
@@ -357,9 +367,11 @@ def delivery_attempt_from_row(row: sqlite3.Row) -> DeliveryAttempt:
     return DeliveryAttempt(
         id=row["id"],
         occurrence_id=row["occurrence_id"],
+        logical_delivery_id=row["logical_delivery_id"],
         attempted_at=datetime_from_iso(row["attempted_at"]),
         status=DeliveryStatus(row["status"]),
         transport=row["transport"],
         error=row["error"],
+        applied_to_occurrence=bool(row["applied_to_occurrence"]),
         created_at=datetime_from_iso(row["created_at"]),
     )

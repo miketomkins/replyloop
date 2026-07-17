@@ -99,6 +99,33 @@ class OfflineRetryTests(unittest.TestCase):
         self.assertEqual(occurrence, "delivered")
         self.assertNotIn("occurrence.escalated", events)
 
+    def test_transport_failure_then_retry_reuses_one_logical_delivery_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "state.sqlite")
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            adapter = RecordingAdapter([
+                DeliveryOutcome.failure("synthetic", "offline"),
+                DeliveryOutcome.success("synthetic", "msg-ok"),
+            ])
+            service = ReminderService(db, adapter, clock)
+            service.create_reminder(
+                reminder_id="reminder-1",
+                target=TARGET,
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+            )
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            service.tick()
+            clock.set(datetime(2026, 1, 1, 9, 1, tzinfo=UTC))
+            service.tick()
+            attempts = db.connection.execute(
+                "SELECT logical_delivery_id, status, applied_to_occurrence FROM delivery_attempts ORDER BY attempted_at"
+            ).fetchall()
+            db.close()
+        self.assertEqual([request.idempotency_key for request in adapter.requests], [adapter.requests[0].idempotency_key] * 2)
+        self.assertEqual({row["logical_delivery_id"] for row in attempts}, {adapter.requests[0].idempotency_key})
+        self.assertEqual([row["status"] for row in attempts], ["failure", "success"])
+
     def test_adapter_exception_restores_occurrence_for_retry(self) -> None:
         class RaisingAdapter:
             transport = "synthetic"
@@ -221,6 +248,57 @@ class OfflineRetryTests(unittest.TestCase):
         self.assertEqual([row["status"] for row in attempts], ["success", "success"])
         self.assertEqual([event["applied"] for event in success_events], [True, False])
 
+    def test_old_outcome_before_replacement_computes_key_reuses_same_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            db = connect(path)
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            setup = ReminderService(db, RecordingAdapter(), clock)
+            setup.create_reminder(
+                reminder_id="reminder-1",
+                target=TARGET,
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+            )
+            db.close()
+
+            original_adapter = BlockingSuccessAdapter("msg-original")
+
+            def run_original() -> None:
+                worker_db = connect(path)
+                try:
+                    clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+                    ReminderService(worker_db, original_adapter, clock).tick()
+                finally:
+                    worker_db.close()
+
+            thread = threading.Thread(target=run_original)
+            thread.start()
+            self.assertTrue(original_adapter.started.wait(timeout=5))
+            expired_db = connect(path)
+            clock.set(datetime(2026, 1, 1, 10, 0, 1, tzinfo=UTC))
+            occurrence_id = expired_db.connection.execute("SELECT id FROM occurrences").fetchone()["id"]
+            expired_db.connection.execute(
+                "UPDATE occurrences SET status = ?, updated_at = ?, delivery_claim_id = NULL WHERE id = ?",
+                (OccurrenceStatus.DUE.value, datetime_to_iso(clock.now()), occurrence_id),
+            )
+            expired_db.connection.commit()
+            expired_db.close()
+            original_adapter.release.set()
+            thread.join(timeout=5)
+
+            replacement_db = connect(path)
+            replacement_adapter = RecordingAdapter([DeliveryOutcome.success("synthetic", "msg-replacement")])
+            clock.set(datetime(2026, 1, 1, 10, 1, 1, tzinfo=UTC))
+            replacement = ReminderService(replacement_db, replacement_adapter, clock).tick()
+            attempts = replacement_db.connection.execute(
+                "SELECT logical_delivery_id, applied_to_occurrence FROM delivery_attempts ORDER BY attempted_at, id"
+            ).fetchall()
+            replacement_db.close()
+        self.assertEqual((replacement.attempted, replacement.delivered), (1, 1))
+        self.assertEqual(original_adapter.requests[0].idempotency_key, replacement_adapter.requests[0].idempotency_key)
+        self.assertEqual([row["applied_to_occurrence"] for row in attempts], [0, 1])
+
     def test_expired_claim_reuses_stable_idempotency_key_for_provider_dedupe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.sqlite"
@@ -275,6 +353,57 @@ class OfflineRetryTests(unittest.TestCase):
         self.assertEqual({request.idempotency_key for request in all_requests}, {all_requests[0].idempotency_key})
         self.assertEqual(len(external_requests), 1)
         self.assertEqual([row["status"] for row in attempts], ["success", "success"])
+
+    def test_duplicate_successes_count_as_one_applied_logical_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            db = connect(path)
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            setup = ReminderService(db, RecordingAdapter(), clock)
+            setup.create_reminder(
+                reminder_id="reminder-1",
+                target=TARGET,
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+                intervals_minutes=(10,),
+                max_deliveries=2,
+            )
+            db.close()
+            seen: dict[str, str] = {}
+            original_adapter = SharedIdempotentBlockingAdapter("msg-original", seen, block=True)
+
+            def run_original() -> None:
+                worker_db = connect(path)
+                try:
+                    clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+                    ReminderService(worker_db, original_adapter, clock).tick()
+                finally:
+                    worker_db.close()
+
+            thread = threading.Thread(target=run_original)
+            thread.start()
+            self.assertTrue(original_adapter.started.wait(timeout=5))
+            recovery_db = connect(path)
+            recovery_adapter = SharedIdempotentBlockingAdapter("msg-replacement", seen)
+            clock.set(datetime(2026, 1, 1, 10, 0, 1, tzinfo=UTC))
+            ReminderService(recovery_db, recovery_adapter, clock).tick()
+            recovery_db.close()
+            original_adapter.release.set()
+            thread.join(timeout=5)
+
+            next_db = connect(path)
+            next_adapter = RecordingAdapter()
+            clock.set(datetime(2026, 1, 1, 10, 10, 1, tzinfo=UTC))
+            next_delivery = ReminderService(next_db, next_adapter, clock).tick()
+            rows = next_db.connection.execute(
+                "SELECT logical_delivery_id, status, applied_to_occurrence FROM delivery_attempts ORDER BY attempted_at, id"
+            ).fetchall()
+            next_db.close()
+        self.assertEqual((next_delivery.attempted, next_delivery.delivered), (1, 1))
+        self.assertEqual(sorted(row["applied_to_occurrence"] for row in rows[:2]), [0, 1])
+        self.assertEqual(rows[2]["applied_to_occurrence"], 1)
+        self.assertEqual(rows[0]["logical_delivery_id"], rows[1]["logical_delivery_id"])
+        self.assertNotEqual(rows[1]["logical_delivery_id"], rows[2]["logical_delivery_id"])
 
 
 if __name__ == "__main__":

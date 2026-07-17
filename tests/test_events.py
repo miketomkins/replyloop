@@ -52,9 +52,11 @@ class EventStoreTests(unittest.TestCase):
             attempt = DeliveryAttempt(
                 id="attempt-one",
                 occurrence_id="occurrence-events",
+                logical_delivery_id="replyloop:occurrence-events:delivery:1",
                 attempted_at=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
                 status=DeliveryStatus.SUCCESS,
                 transport="synthetic-transport",
+                applied_to_occurrence=True,
             )
             event = db.add_delivery_attempt(attempt)
             events = events_for(db, "occurrence", "occurrence-events")
@@ -74,6 +76,7 @@ class EventStoreTests(unittest.TestCase):
                     DeliveryAttempt(
                         id="attempt-missing",
                         occurrence_id="missing-occurrence",
+                        logical_delivery_id="replyloop:missing-occurrence:delivery:1",
                         attempted_at=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
                         status=DeliveryStatus.FAILURE,
                         transport="synthetic-transport",

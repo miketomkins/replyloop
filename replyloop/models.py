@@ -88,10 +88,12 @@ class Occurrence:
 class DeliveryAttempt:
     id: str
     occurrence_id: str
+    logical_delivery_id: str
     attempted_at: datetime
     status: DeliveryStatus
     transport: str
     error: str | None = None
+    applied_to_occurrence: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -99,6 +101,8 @@ class DeliveryAttempt:
             raise ValidationError("delivery attempt id is required")
         if not self.occurrence_id:
             raise ValidationError("occurrence id is required")
+        if not self.logical_delivery_id:
+            raise ValidationError("logical delivery id is required")
         if not self.transport:
             raise ValidationError("transport is required")
         _require_aware_utc(self.attempted_at, "attempted_at")

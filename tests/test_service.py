@@ -65,6 +65,19 @@ class AdvancingSuccessAdapter:
         return DeliveryOutcome.success(self.transport, f"msg-{len(self.requests)}")
 
 
+class IncrementingClockAdapter:
+    transport = "synthetic"
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.requests: list[DeliveryRequest] = []
+
+    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
+        self.requests.append(request)
+        self.clock.advance(minutes=1)
+        return DeliveryOutcome.success(self.transport, f"msg-{len(self.requests)}")
+
+
 def make_service(tmp: str, *, outcomes: list[DeliveryOutcome] | None = None, now: datetime | None = None):
     db = connect(Path(tmp) / "state.sqlite")
     clock = FakeClock(now or datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
@@ -210,6 +223,48 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual((due.attempted, due.delivered), (1, 1))
         self.assertEqual(attempts[0]["attempted_at"], "2026-01-01T09:12:00.000000Z")
         self.assertEqual(attempts[0]["created_at"], "2026-01-01T09:12:00.000000Z")
+
+    def test_multiple_occurrences_in_slow_tick_use_fresh_pre_claim_clock_times(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "state.sqlite")
+            clock = FakeClock(datetime(2026, 1, 1, 8, 59, tzinfo=UTC))
+            adapter = IncrementingClockAdapter(clock)
+            service = ReminderService(db, adapter, clock)
+            create_daily(service)
+            service.create_reminder(
+                reminder_id="reminder-2",
+                target={**TARGET, CHAT_KEY: "conversation-beta"},
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+            )
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            result = service.tick()
+            claim_times = [
+                event.created_at.isoformat().replace("+00:00", "Z")
+                for event in db.list_events()
+                if event.event_type == "delivery.claimed"
+            ]
+            attempt_times = db.connection.execute("SELECT attempted_at, created_at FROM delivery_attempts ORDER BY attempted_at").fetchall()
+            db.close()
+        self.assertEqual((result.attempted, result.delivered), (2, 2))
+        self.assertEqual(claim_times, ["2026-01-01T09:00:00Z", "2026-01-01T09:01:00Z"])
+        self.assertEqual([row["attempted_at"] for row in attempt_times], ["2026-01-01T09:01:00.000000Z", "2026-01-01T09:02:00.000000Z"])
+        self.assertEqual([row["created_at"] for row in attempt_times], ["2026-01-01T09:01:00.000000Z", "2026-01-01T09:02:00.000000Z"])
+
+    def test_next_escalation_uses_new_logical_delivery_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, clock, adapter, service = make_service(tmp)
+            create_daily(service, max_deliveries=2)
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            service.tick()
+            clock.set(datetime(2026, 1, 1, 9, 10, tzinfo=UTC))
+            service.tick()
+            keys = [request.idempotency_key for request in adapter.requests]
+            attempts = db.connection.execute("SELECT DISTINCT logical_delivery_id FROM delivery_attempts ORDER BY logical_delivery_id").fetchall()
+            db.close()
+        self.assertEqual(len(keys), 2)
+        self.assertNotEqual(keys[0], keys[1])
+        self.assertEqual([row["logical_delivery_id"] for row in attempts], keys)
 
     def test_done_snooze_and_cancel_mutate_only_matching_delivered_occurrence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
