@@ -243,6 +243,25 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertLess(workflow.index("Verify wheel"), workflow.index("Clean wheel install"))
         self.assertLess(workflow.index("Clean wheel install"), workflow.index("Source cleanliness after build"))
 
+    def test_compileall_wrapper_preserves_source_cleanliness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "sample"
+            package.mkdir()
+            (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [sys.executable, "-m", "compileall", "-q", str(package)],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(list(root.rglob("__pycache__")))
+
     def test_no_skipped_tests_or_committed_build_outputs(self) -> None:
         tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True).stdout.splitlines()
         forbidden_suffixes = (".pyc", ".db", ".sqlite", ".sqlite3", ".log")
