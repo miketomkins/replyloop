@@ -235,6 +235,47 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("machine-specific absolute path", result.stderr)
             self.assertNotIn(target, result.stderr)
 
+    def test_tracked_symlink_with_binary_suffix_target_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            target = "/".join(["", "home", "privateuser", "replyloop"])
+            (root / "private.bin").symlink_to(target)
+            self.assertEqual(git(root, "add", "private.bin").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("private.bin:1", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertNotIn(target, result.stderr)
+
+    def test_pgp_private_key_block_header_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            key_header = "-----BEGIN PGP PRIVATE KEY" + " BLOCK-----"
+            (root / "key.txt").write_text(key_header + "\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("key.txt:1", result.stderr)
+            self.assertIn("private key marker", result.stderr)
+            self.assertNotIn(key_header, result.stderr)
+
+    def test_sensitive_filename_is_reported_without_token_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            token = "ghp_" + "A" * 24
+            (root / ("backup-" + token + ".log")).write_text("safe\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
+            self.assertNotIn(token, result.stderr)
+
     def test_documentation_ipv6_example_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

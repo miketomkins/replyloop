@@ -48,7 +48,7 @@ ARTIFACT_PATH_RE = re.compile(
 CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "private key marker",
-        re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----"),
+        re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: [A-Z0-9 ]{1,20})?-----"),
     ),
     (
         "assigned secret or token value",
@@ -77,6 +77,12 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+PATH_REDACTIONS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+)
+
 IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])")
 
@@ -89,9 +95,17 @@ class Finding:
 
     def format(self, root: Path) -> str:
         rel = self.path.relative_to(root) if self.path.is_relative_to(root) else self.path
+        display_path = redact_path(rel.as_posix())
         if self.line is None:
-            return f"{rel}: path: {self.rule}"
-        return f"{rel}:{self.line}: {self.rule}"
+            return f"{display_path}: path: {self.rule}"
+        return f"{display_path}:{self.line}: {self.rule}"
+
+
+def redact_path(value: str) -> str:
+    redacted = value
+    for pattern in PATH_REDACTIONS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
 
 
 def run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -206,7 +220,7 @@ def audit(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for path in candidate_files(root):
         findings.extend(scan_path(root, path))
-        if looks_text(path):
+        if path.is_symlink() or looks_text(path):
             findings.extend(scan_text(root, path))
     return findings
 
