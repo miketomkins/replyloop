@@ -12,7 +12,7 @@ from pathlib import Path
 from replyloop.clock import FakeClock
 from replyloop.db import connect
 from replyloop.delivery import RecordingAdapter
-from replyloop.models import datetime_to_iso
+from replyloop.models import Occurrence, OccurrenceStatus, Reminder, datetime_to_iso
 from replyloop.service import ReminderService
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,10 +157,20 @@ class CLITests(unittest.TestCase):
 
     def test_doctor_json_and_human_output_shape_match_for_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.db"
+            db = connect(path)
+            due_at = datetime(2020, 1, 1, 0, 1, tzinfo=UTC)
+            future_due_at = datetime(2099, 1, 1, 0, 1, tzinfo=UTC)
+            db.add_reminder(Reminder("r-doctor-due", json.dumps({"platform": "telegram", CHAT_KEY: "conversation-due"}), {"kind": "once", "at": "2020-01-01T00:01:00Z"}, "UTC"))
+            db.add_reminder(Reminder("r-doctor-snoozed", json.dumps({"platform": "telegram", CHAT_KEY: "conversation-snoozed"}), {"kind": "once", "at": "2099-01-01T00:01:00Z"}, "UTC"))
+            db.add_occurrence(Occurrence("o-doctor-due", "r-doctor-due", due_at, OccurrenceStatus.DUE, due_at=due_at))
+            db.add_occurrence(Occurrence("o-doctor-snoozed", "r-doctor-snoozed", due_at, OccurrenceStatus.SNOOZED, due_at=future_due_at))
+            db.close()
             json_result = run_cli(tmp, "--json", "doctor")
             human_result = run_cli(tmp, "doctor")
         self.assertEqual(json_result.returncode, 0, json_result.stderr)
         self.assertEqual(human_result.returncode, 0, human_result.stderr)
+        self.assertEqual(json.loads(json_result.stdout)["doctor"]["counts"], {"due": 1, "pending_reminders": 2, "retry_queue": 0})
         self.assertEqual(json.loads(json_result.stdout)["doctor"]["counts"], json.loads(human_result.stdout)["doctor"]["counts"])
         self.assertEqual(json.loads(json_result.stdout)["doctor"].keys(), json.loads(human_result.stdout)["doctor"].keys())
 

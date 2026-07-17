@@ -202,11 +202,7 @@ class ReplyLoopDB:
         return [_row_to_occurrence(row) for row in rows]
 
     def count_due_occurrences(self, before_utc: datetime) -> int:
-        row = self.connection.execute(
-            "SELECT COUNT(*) FROM occurrences WHERE status IN (?, ?) AND due_at < ?",
-            (OccurrenceStatus.DUE.value, OccurrenceStatus.SNOOZED.value, datetime_to_iso(before_utc)),
-        ).fetchone()
-        return int(row[0])
+        return len(self.list_due_occurrences(before_utc))
 
     def list_events(self, aggregate_type: str | None = None, aggregate_id: str | None = None) -> list[Event]:
         if aggregate_type is None and aggregate_id is None:
