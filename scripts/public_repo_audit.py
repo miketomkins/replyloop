@@ -15,7 +15,7 @@ from typing import Iterable
 
 SAFE_EXAMPLE_NETWORKS = tuple(
     ipaddress.ip_network(value)
-    for value in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
+    for value in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32")
 )
 
 TEXT_SUFFIXES = {
@@ -53,23 +53,23 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "assigned secret or token value",
         re.compile(
-            r"(?i)(?:\b|['\"])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|credential)(?:\b|['\"])"
+            r"(?i)(?:\b|['\"])[a-z0-9_-]*(?:api[_-]?key|token|secret|password|passwd|credential)[a-z0-9_-]*(?:\b|['\"])"
             r"\s*[:=]\s*['\"]?[^'\"\s]{8,}"
         ),
     ),
     (
         "authorization bearer token",
-        re.compile(r"(?i)\bauthorization\b\s*[:=]\s*['\"]?bearer\s+[A-Za-z0-9._~+/=-]{12,}"),
+        re.compile(r"(?i)(?:\b|['\"])authorization(?:\b|['\"])\s*[:=]\s*['\"]?bearer\s+[A-Za-z0-9._~+/=-]{12,}"),
     ),
     ("cloud access key marker", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github token marker", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
     ("slack token marker", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("machine-specific absolute path", re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+\b")),
+    ("machine-specific absolute path", re.compile(r"(?:/(?:Users|home)/[A-Za-z0-9._-]+\b|[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\b)")),
     ("vault or private config path", re.compile(r"(?i)/(?:private|vault|secrets?)(?:/|\b)")),
     ("loopback host name", re.compile(r"(?i)\b" + "local" + "host" + r"\b")),
     (
         "phone number pattern",
-        re.compile(r"(?<![\w.])\+\d[\d .()\-]{7,}\d(?![\w.])"),
+        re.compile(r"(?<![\w.])(?:\+\d[\d .()\-]{7,}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4})(?![\w.])"),
     ),
     (
         "chat or sender identifier pattern",
@@ -130,7 +130,7 @@ def candidate_files(root: Path) -> list[Path]:
     files = git_files(root)
     if files is None:
         files = walk_files(root)
-    return sorted(path for path in files if path.is_file())
+    return sorted(path for path in files if path.is_file() or path.is_symlink())
 
 
 def looks_text(path: Path) -> bool:
@@ -172,17 +172,25 @@ def scan_path(root: Path, path: Path) -> Iterable[Finding]:
 
 
 def scan_text(root: Path, path: Path) -> Iterable[Finding]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    if path.is_symlink():
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = os.readlink(path)
         except OSError:
             return
-    except OSError:
-        return
+        lines = [text]
+    else:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return
+        except OSError:
+            return
+        lines = text.splitlines()
 
-    for line_no, line in enumerate(text.splitlines(), start=1):
+    for line_no, line in enumerate(lines, start=1):
         for rule, pattern in CHECKS:
             if pattern.search(line):
                 yield Finding(path, line_no, rule)

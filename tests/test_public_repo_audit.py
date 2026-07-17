@@ -162,6 +162,92 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("authorization bearer token", result.stderr)
             self.assertNotIn("abcde12345fghij67890", result.stderr)
 
+    def test_quoted_authorization_bearer_token_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            key = "Authorization"
+            value = "Bearer" + " " + "quoted12345token67890"
+            (root / "headers.json").write_text(
+                "{" + f'"{key}": "{value}"' + "}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("headers.json:1", result.stderr)
+            self.assertIn("authorization bearer token", result.stderr)
+            self.assertNotIn("quoted12345token67890", result.stderr)
+
+    def test_common_token_assignment_names_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            names = [
+                "bot" + "_" + "token",
+                "auth" + "_" + "token",
+                "client" + "_" + "secret",
+                "private" + "_" + "token",
+            ]
+            (root / "assignments.txt").write_text(
+                "\n".join(f"{name}=syntheticForbiddenValue" for name in names) + "\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            for line_no in range(1, len(names) + 1):
+                self.assertIn(f"assignments.txt:{line_no}", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+
+    def test_windows_path_and_domestic_phone_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            windows_path = "C:" + "\\" + "Users" + "\\" + "publicperson" + "\\" + "AppData"
+            phone = "(" + "202" + ") " + "555" + "-" + "0188"
+            (root / "private.txt").write_text(
+                f"path={windows_path}\nphone={phone}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("private.txt:1", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertIn("private.txt:2", result.stderr)
+            self.assertIn("phone number pattern", result.stderr)
+            self.assertNotIn(windows_path, result.stderr)
+            self.assertNotIn(phone, result.stderr)
+
+    def test_tracked_symlink_target_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(git(root, "init").returncode, 0)
+            target = "/".join(["", "home", "privateuser", "replyloop"])
+            (root / "private-link").symlink_to(target)
+            self.assertEqual(git(root, "add", "private-link").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("private-link:1", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertNotIn(target, result.stderr)
+
+    def test_documentation_ipv6_example_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            example_ipv6 = "2001" + ":" + "db8" + ":" + ":" + "10"
+            (root / "network.md").write_text(
+                "Document with " + example_ipv6 + " as a reserved example.\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_ipv6_loopback_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
