@@ -52,6 +52,10 @@ auth.*
 # Backups, logs, and local runtime state
 *.bak
 *.backup
+*.zip
+*.tar
+*.tgz
+*.tar.gz
 *.log
 logs/
 backups/

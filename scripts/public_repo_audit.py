@@ -40,7 +40,7 @@ TEXT_SUFFIXES = {
 }
 
 ARTIFACT_PATH_RE = re.compile(
-    r"(^|/)(?:\.env(?:\..*)?|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|log)|"
+    r"(^|/)(?:\.env(?:\..*)?|.*\.(?:db|sqlite|sqlite3|db-wal|db-shm|sqlite-wal|sqlite-shm|bak|backup|zip|tar|tgz|tar\.gz|log)|"
     r"(?:auth(?:[._-].*)?|logs?|backups?|credentials?)(?:/|$)|.*(?:[._-]auth(?:[._-].*)?|secret|token|credentials?).*)",
     re.IGNORECASE,
 )
@@ -63,13 +63,15 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("cloud access key marker", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github token marker", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
+    ("openai token marker", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    ("gitlab token marker", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
     ("slack token marker", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("machine-specific absolute path", re.compile(r"(?:/(?:Users|home)/[A-Za-z0-9._-]+\b|[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\b)")),
+    ("machine-specific absolute path", re.compile(r"(?i)(?:/(?:Users|home|root)(?:/[A-Za-z0-9._-]+)?\b|[A-Za-z]:\\users\\[A-Za-z0-9._-]+\b)")),
     ("vault or private config path", re.compile(r"(?i)/(?:private|vault|secrets?)(?:/|\b)")),
     ("loopback host name", re.compile(r"(?i)\b" + "local" + "host" + r"\b")),
     (
         "phone number pattern",
-        re.compile(r"(?<![\w.])(?:\+\d[\d .()\-]{7,}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4})(?![\w.])"),
+        re.compile(r"(?<![\w.])(?:\+\d[\d .()\-]{7,}\d|\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4})(?![\w.])"),
     ),
     (
         "chat or sender identifier pattern",
@@ -80,7 +82,10 @@ CHECKS: tuple[tuple[str, re.Pattern[str]], ...] = (
 PATH_REDACTIONS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)(?:[=:._-])[^/]+"),
 )
 
 IP_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")

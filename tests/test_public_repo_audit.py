@@ -220,6 +220,49 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertNotIn(windows_path, result.stderr)
             self.assertNotIn(phone, result.stderr)
 
+    def test_lowercase_windows_root_path_and_unformatted_phone_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            windows_path = "c:" + "\\" + "users" + "\\" + "publicperson" + "\\" + "AppData"
+            root_path = "/" + "root" + "/" + ".config" + "/" + "tool"
+            phone = "202" + "555" + "0188"
+            (root / "private.txt").write_text(
+                f"path={windows_path}\npath={root_path}\nphone={phone}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("private.txt:1", result.stderr)
+            self.assertIn("private.txt:2", result.stderr)
+            self.assertIn("machine-specific absolute path", result.stderr)
+            self.assertIn("private.txt:3", result.stderr)
+            self.assertIn("phone number pattern", result.stderr)
+            self.assertNotIn(windows_path, result.stderr)
+            self.assertNotIn(root_path, result.stderr)
+            self.assertNotIn(phone, result.stderr)
+
+    def test_raw_common_provider_tokens_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            openai_token = "sk-" + "A" * 24
+            gitlab_token = "glpat-" + "B" * 24
+            (root / "tokens.txt").write_text(
+                f"{openai_token}\n{gitlab_token}\n",
+                encoding="utf-8",
+            )
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tokens.txt:1", result.stderr)
+            self.assertIn("openai token marker", result.stderr)
+            self.assertIn("tokens.txt:2", result.stderr)
+            self.assertIn("gitlab token marker", result.stderr)
+            self.assertNotIn(openai_token, result.stderr)
+            self.assertNotIn(gitlab_token, result.stderr)
+
     def test_tracked_symlink_target_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -275,6 +318,30 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("path", result.stderr)
             self.assertIn("forbidden local artifact", result.stderr)
             self.assertNotIn(token, result.stderr)
+
+    def test_generic_credential_filename_is_reported_without_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = "candidate" + "Value" + "123456"
+            (root / ("api" + "_" + "key=" + candidate + ".log")).write_text("safe\n", encoding="utf-8")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
+            self.assertNotIn(candidate, result.stderr)
+
+    def test_backup_archive_path_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "backup.zip").write_bytes(b"archive bytes")
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("backup.zip: path", result.stderr)
+            self.assertIn("forbidden local artifact", result.stderr)
 
     def test_documentation_ipv6_example_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
