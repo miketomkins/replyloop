@@ -343,6 +343,7 @@ def scan_git_history(root: Path) -> list[Finding]:
     if commits.returncode != 0:
         return [Finding(root / ".git-history" / "REV_LIST", None, "unable to enumerate all git history")]
     findings: list[Finding] = []
+    findings.extend(scan_git_refs(root))
     for commit in [line.strip() for line in commits.stdout.splitlines() if line.strip()]:
         message = run_git(root, ["show", "-s", "--format=%B", commit])
         message_path = root / ".git-history" / commit[:12] / "COMMIT_MESSAGE"
@@ -364,6 +365,35 @@ def scan_git_history(root: Path) -> list[Finding]:
                 text = blob.stdout.decode("utf-8", errors="replace")
                 findings.extend(scan_lines(history_path, text.splitlines()))
     return findings
+
+
+def scan_git_refs(root: Path) -> list[Finding]:
+    refs = run_git(root, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)"])
+    if refs.returncode != 0:
+        return [Finding(root / ".git-refs" / "FOR_EACH_REF", None, "unable to enumerate git refs")]
+    findings: list[Finding] = []
+    for line in [item for item in refs.stdout.splitlines() if item]:
+        parts = line.split("\0")
+        if len(parts) != 3:
+            findings.append(Finding(root / ".git-refs" / "FOR_EACH_REF", None, "unable to parse git ref metadata"))
+            continue
+        refname, object_id, object_type = parts
+        ref_path = root / ".git-refs" / object_id[:12] / "REF_NAME"
+        findings.extend(scan_path_value(ref_path, refname, " in git ref"))
+        if object_type == "tag":
+            findings.extend(scan_git_tag_message(root, object_id))
+    return findings
+
+
+def scan_git_tag_message(root: Path, object_id: str) -> list[Finding]:
+    tag = run_git(root, ["cat-file", "-p", object_id])
+    tag_path = root / ".git-refs" / object_id[:12] / "TAG_MESSAGE"
+    if tag.returncode != 0:
+        return [Finding(tag_path, None, "unable to read git annotated tag message")]
+    _, separator, message = tag.stdout.partition("\n\n")
+    if not separator:
+        return []
+    return list(scan_lines(tag_path, message.splitlines()))
 
 
 def scan_history_path(root: Path, history_path: Path, rel: str) -> Iterable[Finding]:

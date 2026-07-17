@@ -30,6 +30,12 @@ def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def init_repo(root: Path) -> None:
+    assert git(root, "init").returncode == 0
+    assert git(root, "config", "user.email", "dev@example.com").returncode == 0
+    assert git(root, "config", "user.name", "Example Dev").returncode == 0
+
+
 class PublicRepoAuditTests(unittest.TestCase):
     def test_clean_non_git_repository_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -597,12 +603,10 @@ class PublicRepoAuditTests(unittest.TestCase):
                 self.assertNotIn(value, result.stderr)
 
     def test_git_history_commit_message_absolute_replyloop_path_is_not_normalized_away(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/" + "home" + "/" + "hermes") as tmp:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             root = Path(tmp) / "replyloop"
             root.mkdir()
-            self.assertEqual(git(root, "init").returncode, 0)
-            self.assertEqual(git(root, "config", "user.email", "dev@example.com").returncode, 0)
-            self.assertEqual(git(root, "config", "user.name", "Example Dev").returncode, 0)
+            init_repo(root)
             (root / "README.md").write_text("clean\n", encoding="utf-8")
             self.assertEqual(git(root, "add", "README.md").returncode, 0)
             private_path = root.as_posix().rstrip("/") + "/"
@@ -614,6 +618,43 @@ class PublicRepoAuditTests(unittest.TestCase):
             self.assertIn("COMMIT_MESSAGE:1", result.stderr)
             self.assertIn("machine-specific absolute path", result.stderr)
             self.assertNotIn(private_path, result.stderr)
+
+    def test_git_annotated_tag_message_is_scanned_without_secret_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            secret_name = "api" + "_" + "key"
+            secret_value = "T" * 24
+            self.assertEqual(git(root, "tag", "-a", "v0.1.0", "-m", f"release {secret_name}={secret_value}").returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-refs/", result.stderr)
+            self.assertIn("TAG_MESSAGE:1", result.stderr)
+            self.assertIn("assigned secret or token value", result.stderr)
+            self.assertNotIn(secret_value, result.stderr)
+
+    def test_git_ref_name_is_scanned_without_sensitive_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            self.assertEqual(git(root, "add", "README.md").returncode, 0)
+            self.assertEqual(git(root, "commit", "-m", "bootstrap").returncode, 0)
+            private_host = "nas" + "." + "internal"
+            self.assertEqual(git(root, "branch", private_host).returncode, 0)
+
+            result = run_audit(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".git-refs/", result.stderr)
+            self.assertIn("REF_NAME: path", result.stderr)
+            self.assertIn("private host name in path", result.stderr)
+            self.assertNotIn(private_host, result.stderr)
 
     def test_git_history_broken_ref_fails_audit_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
