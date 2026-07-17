@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db import ReplyLoopDB, connect
 from .delivery import DeliveryOutcome, DeliveryRequest
 from .errors import MigrationError, ValidationError
-from .models import ReminderStatus, datetime_to_iso
+from .models import Event, OccurrenceStatus, ReminderStatus, datetime_to_iso, utc_now
 from .replies import ReplyIdentity
 from .service import ReminderService
 
@@ -40,9 +40,11 @@ class CommandResult:
 class StdoutAdapter:
     transport = "stdout"
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, print_deliveries: bool = True) -> None:
         self.fail = fail
+        self.print_deliveries = print_deliveries
         self.requests: list[DeliveryRequest] = []
+        self.delivery_records: list[dict[str, Any]] = []
 
     def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
         self.requests.append(request)
@@ -53,7 +55,9 @@ class StdoutAdapter:
             "transport": self.transport,
             "text": request.text,
         }
-        print(json.dumps({"delivery": safe}, sort_keys=True))
+        self.delivery_records.append(safe)
+        if self.print_deliveries:
+            print(json.dumps({"delivery": safe}, sort_keys=True))
         if self.fail:
             return DeliveryOutcome.failure(self.transport, "forced failure")
         return DeliveryOutcome.success(self.transport, f"stdout-{len(self.requests)}")
@@ -129,7 +133,8 @@ def run(args: argparse.Namespace) -> CommandResult:
     if args.command == "backup":
         return CommandResult(backup_database(db_path, Path(args.destination)))
     if args.command == "doctor":
-        return CommandResult(doctor(db_path))
+        payload = doctor(db_path)
+        return CommandResult(payload, 0 if payload["doctor"]["ok"] else 1)
     with connect_for_command(db_path) as db:
         if args.command == "create":
             return CommandResult(create_reminder(db, args))
@@ -140,10 +145,10 @@ def run(args: argparse.Namespace) -> CommandResult:
         if args.command in {"pause", "resume", "cancel"}:
             return CommandResult(set_status(db, args.reminder_id, args.command))
         if args.command == "tick":
-            adapter = StdoutAdapter(fail=args.fail)
+            adapter = StdoutAdapter(fail=args.fail, print_deliveries=not getattr(args, "json", False))
             result = ReminderService(db, adapter).tick()
             exit_code = 1 if result.failed else 0
-            return CommandResult({"tick": asdict(result)}, exit_code)
+            return CommandResult({"tick": asdict(result), "deliveries": adapter.delivery_records}, exit_code)
         if args.command == "reply":
             identity = ReplyIdentity(args.platform, args.chat_id, args.sender_id, args.chat_type == "dm")
             result = ReminderService(db, StdoutAdapter()).handle_reply(args.text, identity)
@@ -240,10 +245,43 @@ def show_reminder(db: ReplyLoopDB, reminder_id: str) -> dict[str, Any]:
 def set_status(db: ReplyLoopDB, reminder_id: str, command: str) -> dict[str, Any]:
     status = {"pause": ReminderStatus.PAUSED, "resume": ReminderStatus.ACTIVE, "cancel": ReminderStatus.CANCELLED}[command]
     event = {"pause": "reminder.paused", "resume": "reminder.resumed", "cancel": "reminder.cancelled"}[command]
-    try:
-        db.update_reminder_status(reminder_id, status, event)
-    except KeyError as exc:
-        raise CLIError("reminder not found", 1) from exc
+    row = db.connection.execute("SELECT status FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+    if row is None:
+        raise CLIError("reminder not found", 1)
+    current = ReminderStatus(row["status"])
+    allowed = {
+        "pause": {ReminderStatus.ACTIVE},
+        "resume": {ReminderStatus.PAUSED},
+        "cancel": {ReminderStatus.ACTIVE, ReminderStatus.PAUSED},
+    }
+    if current not in allowed[command]:
+        raise CLIError(f"cannot {command} reminder in {current.value} status", 1)
+    now = utc_now()
+    with db.transaction() as connection:
+        cursor = connection.execute(
+            "UPDATE reminders SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+            (status.value, datetime_to_iso(now), reminder_id, current.value),
+        )
+        if cursor.rowcount != 1:
+            raise CLIError("reminder status changed; retry command", 1)
+        _insert_event(connection, Event(None, "reminder", reminder_id, event, {"status": status.value}, now))
+        if status == ReminderStatus.CANCELLED:
+            rows = connection.execute(
+                "SELECT id FROM occurrences WHERE reminder_id = ? AND status IN (?, ?, ?, ?)",
+                (
+                    reminder_id,
+                    OccurrenceStatus.DUE.value,
+                    OccurrenceStatus.DELIVERING.value,
+                    OccurrenceStatus.DELIVERED.value,
+                    OccurrenceStatus.SNOOZED.value,
+                ),
+            ).fetchall()
+            for occurrence in rows:
+                connection.execute(
+                    "UPDATE occurrences SET status = ?, updated_at = ?, delivery_claim_id = NULL WHERE id = ?",
+                    (OccurrenceStatus.CANCELLED.value, datetime_to_iso(now), occurrence["id"]),
+                )
+                _insert_event(connection, Event(None, "occurrence", occurrence["id"], "occurrence.cancelled", {"reminder_id": reminder_id}, now))
     return show_reminder(db, reminder_id)
 
 
@@ -282,7 +320,24 @@ def doctor(path: Path) -> dict[str, Any]:
             checks.append(check_item("quick_check", quick == "ok", quick))
             due_count = db.connection.execute("SELECT COUNT(*) FROM occurrences WHERE status IN ('due','snoozed')").fetchone()[0]
             pending_count = db.connection.execute("SELECT COUNT(*) FROM reminders WHERE status = 'active'").fetchone()[0]
-            retry_count = db.connection.execute("SELECT COUNT(DISTINCT occurrence_id) FROM delivery_attempts WHERE status = 'failure' AND applied_to_occurrence = 1").fetchone()[0]
+            retry_count = db.connection.execute(
+                """
+                SELECT COUNT(DISTINCT f.occurrence_id)
+                FROM delivery_attempts f
+                JOIN occurrences o ON o.id = f.occurrence_id
+                WHERE f.status = 'failure'
+                  AND f.applied_to_occurrence = 1
+                  AND o.status IN ('due', 'snoozed', 'delivering')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM delivery_attempts s
+                      WHERE s.occurrence_id = f.occurrence_id
+                        AND s.status = 'success'
+                        AND s.applied_to_occurrence = 1
+                        AND (s.attempted_at > f.attempted_at OR (s.attempted_at = f.attempted_at AND s.id > f.id))
+                  )
+                """
+            ).fetchone()[0]
     except sqlite3.DatabaseError as exc:
         checks.append(check_item("database", False, _safe_error(exc)))
         due_count = pending_count = retry_count = None
@@ -304,6 +359,13 @@ def check_timezone() -> dict[str, Any]:
         return check_item("timezone", False, _safe_error(exc))
     now = datetime.now(UTC)
     return check_item("clock_timezone", now.tzinfo is not None, datetime_to_iso(now))
+
+
+def _insert_event(connection: sqlite3.Connection, event: Event) -> None:
+    connection.execute(
+        "INSERT INTO events(aggregate_type, aggregate_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        (event.aggregate_type, event.aggregate_id, event.event_type, json.dumps(event.payload, sort_keys=True, separators=(",", ":")), datetime_to_iso(event.created_at)),
+    )
 
 
 def row_to_public_reminder(row: sqlite3.Row) -> dict[str, Any]:

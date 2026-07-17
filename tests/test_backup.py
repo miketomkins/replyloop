@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import subprocess
 import sys
@@ -49,6 +50,18 @@ class BackupTests(unittest.TestCase):
         rendered = str(payload)
         self.assertIn("database", rendered)
         self.assertNotIn("telegram", rendered)
+
+    def test_doctor_command_exits_nonzero_for_corrupt_database(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "broken.db"
+            path.write_bytes(b"not sqlite")
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(ROOT)
+            env["REPLYLOOP_DB"] = str(path)
+            result = subprocess.run([sys.executable, "-m", "replyloop", "--json", "doctor"], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(json.loads(result.stdout)["doctor"]["ok"])
+        self.assertEqual(result.stderr, "")
 
     def test_doctor_reports_schema_counts_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

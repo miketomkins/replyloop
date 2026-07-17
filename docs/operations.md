@@ -34,7 +34,7 @@ Run the tick command from cron, systemd timers, launchd, or another scheduler:
 REPLYLOOP_DB=/var/lib/replyloop/state.db replyloop tick --json
 ```
 
-`tick` creates due occurrences, uses a deterministic stdout delivery adapter, and exits nonzero when any due delivery fails. Failed deliveries remain in the retry queue so later ticks can retry according to the service retry policy.
+`tick` creates due occurrences, uses a deterministic stdout delivery adapter, and exits nonzero when any due delivery fails. With `--json`, delivery records are collected under the final `deliveries` array so stdout is one valid JSON document. Without `--json`, delivery records may also be printed as they are attempted. Failed deliveries remain in the retry queue so later ticks can retry according to the service retry policy.
 
 For local deterministic testing you can force a transport failure:
 
@@ -86,6 +86,17 @@ Restore does not require migrations to be run manually. The CLI opens the databa
 - clock and timezone readiness
 
 Doctor output intentionally omits reminder targets. Counts are safe for operational dashboards.
+The command exits nonzero when any diagnostic check fails, including corrupt or unreadable SQLite files. The `retry_queue` count includes only currently outstanding retry work, not historical failures that later succeeded or were closed.
+
+## Status changes
+
+Lifecycle commands enforce explicit transitions:
+
+- `pause`: active to paused
+- `resume`: paused to active
+- `cancel`: active or paused to cancelled
+
+Cancelled reminders are terminal and cannot be resumed. Cancelling a reminder also cancels open delivered, due, snoozed, or in-flight occurrences so reminder and occurrence projections stay consistent.
 
 ## Troubleshooting
 
@@ -93,6 +104,7 @@ Doctor output intentionally omits reminder targets. Counts are safe for operatio
 - `choose exactly one schedule mode`: pass only one of `--schedule-json`, `--once-at`, `--daily`, or `--weekly`.
 - `--daily requires at least one --time HH:MM`: provide one or more local wall-clock times.
 - `unknown timezone`: use an IANA timezone available to Python `zoneinfo`, such as `UTC`.
+- `cannot resume reminder in cancelled status`: cancellation is terminal; create a new reminder instead.
 - `quick_check` or `integrity_check` is not `ok`: stop schedulers, preserve the database file, restore the newest verified backup, and investigate storage health before restarting.
 
 ## No data deletion guarantee

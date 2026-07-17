@@ -6,12 +6,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from replyloop.clock import FakeClock
 from replyloop.db import connect
 from replyloop.delivery import RecordingAdapter
+from replyloop.models import datetime_to_iso
 from replyloop.service import ReminderService
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,14 +80,37 @@ class CLITests(unittest.TestCase):
         self.assertEqual(json.loads(cancelled.stdout)["reminder"]["status"], "cancelled")
         self.assertEqual(missing.returncode, 1)
 
+    def test_status_transitions_reject_cancelled_resume_and_double_pause(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(run_cli(tmp, "create", "--id", "r-status", "--once-at", "2020-01-01T00:01:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c-status").returncode, 0)
+            paused = run_cli(tmp, "--json", "pause", "r-status")
+            double_pause = run_cli(tmp, "--json", "pause", "r-status")
+        self.assertEqual(paused.returncode, 0, paused.stderr)
+        self.assertEqual(double_pause.returncode, 1)
+        self.assertIn("cannot pause", json.loads(double_pause.stderr)["error"]["message"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            seed_due(tmp, "r-cancel", "c-cancel")
+            delivered = run_cli(tmp, "--json", "tick")
+            cancelled = run_cli(tmp, "--json", "cancel", "r-cancel")
+            resume_cancelled = run_cli(tmp, "--json", "resume", "r-cancel")
+            shown = run_cli(tmp, "--json", "show", "r-cancel")
+        self.assertEqual(delivered.returncode, 0, delivered.stderr)
+        self.assertEqual(cancelled.returncode, 0, cancelled.stderr)
+        self.assertEqual(resume_cancelled.returncode, 1)
+        self.assertIn("cannot resume", json.loads(resume_cancelled.stderr)["error"]["message"])
+        occurrences = json.loads(shown.stdout)["occurrences"]
+        self.assertEqual({item["status"] for item in occurrences}, {"cancelled"})
+
     def test_tick_stdout_adapter_success_failure_and_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             seed_due(tmp, "r4", "c4", "s4")
             success = run_cli(tmp, "--json", "tick")
             reply = run_cli(tmp, "--json", "reply", "--platform", "telegram", "--chat", "c4", "--sender", "s4", "--chat-type", "dm", "DONE")
         self.assertEqual(success.returncode, 0, success.stderr)
-        self.assertIn('"delivery"', success.stdout)
-        self.assertEqual(json.loads(success.stdout.strip().splitlines()[-1])["tick"]["delivered"], 1)
+        success_payload = json.loads(success.stdout)
+        self.assertEqual(success_payload["tick"]["delivered"], 1)
+        self.assertEqual(len(success_payload["deliveries"]), 1)
         self.assertEqual(reply.returncode, 0, reply.stderr)
         self.assertTrue(json.loads(reply.stdout)["reply"]["handled"])
 
@@ -95,8 +119,24 @@ class CLITests(unittest.TestCase):
             failed = run_cli(tmp, "--json", "tick", "--fail")
             retry = run_cli(tmp, "--json", "doctor")
         self.assertEqual(failed.returncode, 1)
-        self.assertEqual(json.loads(failed.stdout.strip().splitlines()[-1])["tick"]["failed"], 1)
+        self.assertEqual(json.loads(failed.stdout)["tick"]["failed"], 1)
         self.assertEqual(json.loads(retry.stdout)["doctor"]["counts"]["retry_queue"], 1)
+
+    def test_doctor_retry_queue_excludes_resolved_successful_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            seed_due(tmp, "r-retry", "c-retry")
+            failed = run_cli(tmp, "--json", "tick", "--fail")
+            path = Path(tmp) / "state.db"
+            with connect(path) as db:
+                old = datetime_to_iso(datetime.now(UTC) - timedelta(minutes=5))
+                db.connection.execute("UPDATE delivery_attempts SET attempted_at = ?, created_at = ?", (old, old))
+                db.connection.commit()
+            recovered = run_cli(tmp, "--json", "tick")
+            doctor = run_cli(tmp, "--json", "doctor")
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(json.loads(recovered.stdout)["tick"]["delivered"], 1)
+        self.assertEqual(json.loads(doctor.stdout)["doctor"]["counts"]["retry_queue"], 0)
 
     def test_default_path_uses_xdg_data_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
