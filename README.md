@@ -54,7 +54,7 @@ Groups are ignored by reply handling. Wrong senders, wrong chats, unrelated text
 
 ## CLI reference
 
-- `create`: create a reminder from `--once-at`, `--daily`, `--weekly`, or `--schedule-json`. Public creation requires `--title` and `--message`; delivered reminders render that stored content plus due time and supported reply commands.
+- `create`: create a reminder from `--once-at`, `--daily`, `--weekly`, or `--schedule-json`. Public creation requires string `--title` and `--message` values that are not blank after trimming. ReplyLoop trims leading and trailing whitespace once before storage, returns those normalized values from public read surfaces, and delivered reminders render the stored content plus due time and supported reply commands.
 - `list`: list reminders, optionally filtered by status.
 - `show`: show one reminder and its occurrences.
 - `pause`: pause an active reminder.

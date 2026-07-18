@@ -22,6 +22,8 @@ ReplyLoop creates scheduled reminder occurrences with user-supplied title and me
 
 Public creation surfaces require user-supplied `title` and `message` values. Stored deliveries render that exact content, then append due time and supported reply commands.
 
+Both values must be strings and must contain non-whitespace characters after trimming. ReplyLoop normalizes leading and trailing whitespace once at creation, stores and returns the normalized `title` and `message`, and renders those stored values without an additional content transform.
+
 The internal Python `ReminderService.create_reminder` API retains source-compatible defaults only for existing in-process callers: omitted `title` becomes `Reminder`, and omitted `message` becomes `Reminder is due.`. Those deterministic compatibility defaults are not a public user contract; CLI and Hermes tool callers must provide explicit content.
 
 ## Reply commands

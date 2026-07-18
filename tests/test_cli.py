@@ -65,6 +65,25 @@ class CLITests(unittest.TestCase):
         self.assertEqual(json.loads(shown.stdout)["reminder"]["message"], "Give the fern a drink")
         self.assertEqual(json.loads(shown.stdout)["occurrences"], [])
 
+    def test_create_normalizes_edge_whitespace_in_public_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            created = run_cli(tmp, "--json", "create", "--id", "r-edge", "--title", " \tEdge title\n ", "--message", "\n Edge message\t ", "--once-at", "2026-01-01T09:00:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c-edge")
+            listed = run_cli(tmp, "--json", "list")
+            shown = run_cli(tmp, "--json", "show", "r-edge")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        self.assertEqual(json.loads(created.stdout)["reminder"]["title"], "Edge title")
+        self.assertEqual(json.loads(created.stdout)["reminder"]["message"], "Edge message")
+        self.assertEqual(json.loads(listed.stdout)["reminders"][0]["title"], "Edge title")
+        self.assertEqual(json.loads(shown.stdout)["reminder"]["message"], "Edge message")
+
+    def test_create_rejects_empty_and_whitespace_only_content(self) -> None:
+        invalid_cases = (("", "Valid message"), ("   ", "Valid message"), ("Valid title", ""), ("Valid title", "\n\t"))
+        for title, message in invalid_cases:
+            with self.subTest(title=title, message=message), tempfile.TemporaryDirectory() as tmp:
+                result = run_cli(tmp, "--json", "create", "--id", "r-invalid", "--title", title, "--message", message, "--once-at", "2026-01-01T09:00:00Z", "--timezone", "UTC", "--platform", "telegram", "--chat", "c-invalid")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("required", json.loads(result.stderr)["error"]["message"])
+
     def test_create_accepts_schedule_json_and_actionable_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ok = run_cli(tmp, "--json", "create", "--id", "r2", "--title", "Custom", "--message", "Custom body", "--schedule-json", '{"kind":"once","at":"2026-01-01T09:00:00Z"}', "--timezone", "UTC", "--target", json.dumps({"platform": "telegram", CHAT_KEY: "c2"}))

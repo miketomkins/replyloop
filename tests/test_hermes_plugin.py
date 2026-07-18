@@ -4,13 +4,18 @@ import argparse
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 
+from replyloop.clock import FakeClock
+from replyloop.db import connect
+from replyloop.hermes_plugin.schemas import CREATE_SCHEMA
 from replyloop.hermes_plugin import register
 from replyloop.hermes_plugin import delivery
 from replyloop.hermes_plugin.delivery import HermesDeliveryAdapter
+from replyloop.service import ReminderService
 
 
 class FakePluginContext:
@@ -64,6 +69,49 @@ class HermesPluginRegistrationTests(unittest.TestCase):
         self.assertEqual(len(ctx.hooks["pre_gateway_dispatch"]), 1)
         result = json.loads(ctx.tools["replyloop_doctor"]["handler"]({"db": str(Path(tempfile.gettempdir()) / "replyloop-plugin-doctor.sqlite")}))
         self.assertIn("ok", result)
+
+    def test_create_schema_requires_title_and_message(self) -> None:
+        self.assertEqual(CREATE_SCHEMA["parameters"]["required"], ["title", "message"])
+
+    def test_create_list_get_and_synthetic_delivery_use_normalized_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.sqlite"
+            ctx = FakePluginContext()
+            register(ctx)
+            create_payload = json.loads(
+                ctx.tools["replyloop_create"]["handler"](
+                    {
+                        "db": str(db_path),
+                        "id": "r-edge",
+                        "title": " \tEdge title\n ",
+                        "message": "\n Edge message\t ",
+                        "schedule": {"kind": "once", "at": "2027-01-01T09:00:00Z"},
+                        "target": {"platform": "photon", "chat_id": "ca", "sender_id": "sa", "is_dm": True},
+                        "timezone": "UTC",
+                    }
+                )
+            )
+            listed = json.loads(ctx.tools["replyloop_list"]["handler"]({"db": str(db_path)}))
+            got = json.loads(ctx.tools["replyloop_get"]["handler"]({"db": str(db_path), "id": "r-edge"}))
+
+            clock = FakeClock(datetime(2027, 1, 1, 9, 0, tzinfo=timezone.utc))
+            db = connect(db_path)
+            tick = ReminderService(db, HermesDeliveryAdapter(ctx), clock).tick()
+            db.close()
+
+        self.assertTrue(create_payload["ok"])
+        self.assertEqual(create_payload["reminder"]["title"], "Edge title")
+        self.assertEqual(create_payload["reminder"]["message"], "Edge message")
+        self.assertEqual(listed["reminders"][0]["title"], "Edge title")
+        self.assertEqual(listed["reminders"][0]["message"], "Edge message")
+        self.assertEqual(got["reminder"]["title"], "Edge title")
+        self.assertEqual(got["reminder"]["message"], "Edge message")
+        self.assertEqual((tick.attempted, tick.delivered), (1, 1))
+        self.assertEqual(ctx.sends[-1]["args"]["target"], "photon:ca")
+        self.assertEqual(ctx.sends[-1]["args"]["message"], "Edge title\nEdge message\nDue: 2027-01-01T09:00:00.000000Z\nReply DONE, SNOOZE <duration>, or CANCEL.")
+        public_json = json.dumps(create_payload) + json.dumps(listed) + json.dumps(got)
+        self.assertNotIn("sender_id", public_json)
+        self.assertNotIn("chat_id", public_json)
 
     def test_cli_tick_uses_dispatch_tool_send_message(self) -> None:
         from datetime import datetime, timezone

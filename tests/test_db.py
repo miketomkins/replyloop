@@ -36,6 +36,48 @@ def sample_occurrence(identifier: str = "occurrence-alpha") -> Occurrence:
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_reminder_rejects_non_string_blank_and_whitespace_content(self) -> None:
+        invalid_values = (None, 123, "", "   ", "\n\t")
+        for field in ("title", "message"):
+            for value in invalid_values:
+                with self.subTest(field=field, value=value):
+                    kwargs = {
+                        "id": "reminder-invalid-content",
+                        "target": "synthetic-direct-target",
+                        "title": "Valid title",
+                        "message": "Valid message",
+                        "schedule": {"kind": "daily", "times": ["09:00"]},
+                        "timezone": "UTC",
+                    }
+                    kwargs[field] = value
+                    with self.assertRaises(ValidationError):
+                        Reminder(**kwargs)
+
+    def test_reminder_normalizes_edge_whitespace_once_before_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(Path(tmp) / "state.sqlite")
+            reminder = Reminder(
+                id="reminder-normalized",
+                target="synthetic-direct-target",
+                title=" \tEdge title\n ",
+                message="\n Edge message\t ",
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+            )
+            db.add_reminder(reminder)
+
+            stored = db.get_reminder("reminder-normalized")
+            raw = db.connection.execute("SELECT title, message FROM reminders WHERE id = ?", ("reminder-normalized",)).fetchone()
+            db.close()
+
+        assert stored is not None
+        self.assertEqual(reminder.title, "Edge title")
+        self.assertEqual(reminder.message, "Edge message")
+        self.assertEqual(stored.title, "Edge title")
+        self.assertEqual(stored.message, "Edge message")
+        self.assertEqual(raw["title"], "Edge title")
+        self.assertEqual(raw["message"], "Edge message")
+
     def test_reminder_malformed_timezone_key_raises_validation_error(self) -> None:
         with self.assertRaises(ValidationError):
             Reminder(id="reminder-bad-zone", target="synthetic-direct-target", title="Bad zone", message="Should fail", schedule={"kind": "daily", "times": ["09:00"]}, timezone="../UTC")

@@ -52,10 +52,8 @@ class Reminder:
             raise ValidationError("reminder id is required")
         if not self.target:
             raise ValidationError("target is required")
-        if not isinstance(self.title, str) or not self.title.strip():
-            raise ValidationError("title is required")
-        if not isinstance(self.message, str) or not self.message.strip():
-            raise ValidationError("message is required")
+        object.__setattr__(self, "title", _normalize_content(self.title, "title"))
+        object.__setattr__(self, "message", _normalize_content(self.message, "message"))
         if not isinstance(self.schedule, dict):
             raise ValidationError("schedule must be a mapping")
         if not isinstance(self.timezone, str) or not self.timezone:
@@ -145,6 +143,15 @@ class Event:
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _normalize_content(value: str, name: str) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{name} is required")
+    normalized = value.strip()
+    if not normalized:
+        raise ValidationError(f"{name} is required")
+    return normalized
 
 
 def to_utc(value: datetime) -> datetime:

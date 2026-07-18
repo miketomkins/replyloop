@@ -118,6 +118,25 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(adapter.requests[0].text, "Daily update\nSend the concise project update.\nDue: 2026-01-01T09:00:00.000000Z\nReply DONE, SNOOZE <duration>, or CANCEL.")
         self.assertIn("delivery.succeeded", events)
 
+    def test_delivery_renders_exact_stored_normalized_title_and_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, clock, adapter, service = make_service(tmp)
+            reminder = service.create_reminder(
+                reminder_id="reminder-edge-content",
+                target=TARGET,
+                title=" \tEdge title\n ",
+                message="\n Edge message\t ",
+                schedule={"kind": "daily", "times": ["09:00"]},
+                timezone="UTC",
+            )
+            clock.set(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+            service.tick()
+            db.close()
+
+        self.assertEqual(reminder.title, "Edge title")
+        self.assertEqual(reminder.message, "Edge message")
+        self.assertEqual(adapter.requests[0].text, "Edge title\nEdge message\nDue: 2026-01-01T09:00:00.000000Z\nReply DONE, SNOOZE <duration>, or CANCEL.")
+
     def test_pause_during_in_flight_delivery_applies_success_without_stranding_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.sqlite"
@@ -527,6 +546,28 @@ class ServiceLifecycleTests(unittest.TestCase):
                         kwargs.update(overrides)
                         with self.assertRaises(ValidationError):
                             service.create_reminder(**kwargs)
+            finally:
+                db.close()
+
+    def test_create_reminder_rejects_non_string_blank_and_whitespace_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, _clock, _adapter, service = make_service(tmp)
+            try:
+                invalid_values = (None, 123, "", "   ", "\n\t")
+                for field in ("title", "message"):
+                    for index, value in enumerate(invalid_values):
+                        with self.subTest(field=field, value=value):
+                            kwargs = {
+                                "reminder_id": f"reminder-invalid-content-{field}-{index}",
+                                "target": TARGET,
+                                "title": "Valid title",
+                                "message": "Valid message",
+                                "schedule": {"kind": "daily", "times": ["09:00"]},
+                                "timezone": "UTC",
+                            }
+                            kwargs[field] = value
+                            with self.assertRaises(ValidationError):
+                                service.create_reminder(**kwargs)
             finally:
                 db.close()
 

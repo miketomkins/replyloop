@@ -533,8 +533,8 @@ def _meta(schedule: dict[str, Any]) -> dict[str, Any]:
 def _message_for(reminder: Reminder, occurrence: Occurrence) -> str:
     return "\n".join(
         (
-            reminder.title.strip(),
-            reminder.message.strip(),
+            reminder.title,
+            reminder.message,
             f"Due: {datetime_to_iso(occurrence.scheduled_for)}",
             "Reply DONE, SNOOZE <duration>, or CANCEL.",
         )
