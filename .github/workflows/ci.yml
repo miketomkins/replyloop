@@ -14,6 +14,9 @@ jobs:
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The public audit intentionally fails closed on shallow history.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}

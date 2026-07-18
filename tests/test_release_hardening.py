@@ -225,6 +225,7 @@ class ReleaseHardeningTests(unittest.TestCase):
         for version in ("'3.11'", "'3.12'", "'3.13'"):
             self.assertIn(version, workflow)
         for required in (
+            "fetch-depth: 0",
             "scripts/public_repo_audit.py .",
             "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover",
             "PYTHONPYCACHEPREFIX=\"$pycache\" python3 -m compileall -q replyloop",
